@@ -38,10 +38,16 @@ from vrgrid.eval.plan_regret import (
     costmap_from_reference,
     regret,
     restrict,
+    weights,
 )
 from vrgrid.eval.reference_map import build_from_scans
-from vrgrid.eval.synthetic import read_sequence, write_sequence
-from vrgrid.grid.schedule import load
+from vrgrid.eval.synthetic import (
+    POTHOLE_RADIUS_M,
+    POTHOLE_XY_M,
+    read_sequence,
+    write_sequence,
+)
+from vrgrid.grid.schedule import load, load_thresholds
 from vrgrid.grid.transient import TrackList
 
 SCHEDULES = ["5/10/20/40", "5/10/50"]
@@ -95,13 +101,124 @@ def vehicle_frame_scans(root, sequence, keep_moving=False):
 PLAN_BEHIND_M, PLAN_N = -11.0, 44
 PLAN_Y0_M = -5.5
 
-# Start and goal sit in a LANE, not on the centreline. The synthetic car drives
-# down the middle of a 6 m road, so the ground under its track is never observed
-# statically in a short sequence -- it drops out of the common support and the
-# centreline corridor is severed. That is not an artefact to hide: it is what a
-# vehicle in front of you does to a map, and planning in the free lane is what a
-# real planner does about it.
+# Two queries, and reporting both is the point.
+#
+# "hazard" is the one the figure is about. Its lane is derived FROM THE TERRAIN
+# -- it is the y of the scene's only impassable feature, read out of
+# `POTHOLE_XY_M`, not a number chosen to make a curve look right. So the
+# straight line from start to goal runs through the pothole and the planner has
+# to decide about it. `assert_hazard_in_window` refuses to run it if the window
+# does not contain the pothole, because at `--frames 16` it does not and a
+# hazard query with no hazard in it is exactly the failure this is fixing.
+#
+# "control" is the ORIGINAL query, kept unchanged: a lane six cells off centre
+# that no hazard is on. Its job is to come out at R(S) = 0 for every schedule.
+# That is what makes the pair evidence rather than a repositioning: the two
+# queries run on the same maps over the same window, and the only difference
+# between them is whether a decision is at stake. If the control moves, the
+# difference between them is not the pothole.
+#
+# ⚑ The old comment here said the centreline "drops out of the common support
+#   and the centreline corridor is severed", which is why the lane was offset.
+#   That is no longer true -- the beam-surface intersection fix raised coverage
+#   in every ring -- so the offset is kept as a control rather than as a
+#   workaround.
 PLAN_LANE_CELLS = 6
+PLAN_QUERIES = ("hazard", "control")
+
+
+def plan_cell_m() -> float:
+    return float(weights().get("cell_m", 0.25))
+
+
+def window_origin(vehicle_xy_m):
+    """(x0, y0) of the planning window, and the vehicle's (x, y)."""
+    vx, vy = ((float(vehicle_xy_m), 0.0) if np.isscalar(vehicle_xy_m)
+              else (float(vehicle_xy_m[0]), float(vehicle_xy_m[1])))
+    return vx + PLAN_BEHIND_M, vy + PLAN_Y0_M, vx, vy
+
+
+def assert_hazard_in_window(vehicle_xy_m) -> None:
+    """The hazard query is only posed if the hazard is inside the window.
+
+    Not a nicety. At `--frames 16` the window is x = 19-30 m and the pothole is
+    at x = 18, so M* over it contains ZERO impassable cells -- and a regret
+    measured there is comparing two maps of empty road and reporting the
+    tie-breaking between equal-cost paths. Raising is the only way that does
+    not silently become a number on a slide.
+    """
+    x0, y0, _, _ = window_origin(vehicle_xy_m)
+    c = plan_cell_m()
+    x1, y1 = x0 + PLAN_N * c, y0 + PLAN_N * c
+    hx, hy = POTHOLE_XY_M
+    if not (x0 <= hx < x1 and y0 <= hy < y1):
+        raise ValueError(
+            f"the hazard query needs the pothole at {POTHOLE_XY_M} inside the "
+            f"planning window x [{x0:.2f}, {x1:.2f}] y [{y0:.2f}, {y1:.2f}], "
+            "and it is not. The window is placed PLAN_BEHIND_M behind the "
+            "final pose, so this is a statement about the frame count: use "
+            "one that leaves the pothole behind the vehicle and inside 11 m "
+            "of it. Run scripts/plan_query_survey.py to see the window."
+        )
+
+
+def plan_query(which: str, vehicle_xy_m):
+    """(start, goal) in lattice cells for one of `PLAN_QUERIES`.
+
+    Every number here is read off the scene or the sensor. None of them is a
+    knob, and that is the point -- the query this replaces was diagnosed as
+    running down a lane the hazards were not on, and a replacement chosen by
+    trying placements until R(S) looked right would be worse than the original.
+
+    **i of the start** is 1, not 0: `_slope` and `_max_step` zero the one-cell
+    border of the lattice, so cell 0 has no gradient on either map.
+
+    **i of the goal** is the last cell fully outside the BLIND CONE at the
+    final pose. `sensor.blind_cone_m` is 3.74 m of ground the sensor cannot
+    see in any single frame (§1.4), so the last few metres behind the vehicle
+    are held by the fewest observations in the whole window -- and with the
+    common support now restricted to CONFIDENTLY observed ground, a goal in
+    there is simply not in the mask and no path exists. That is what the
+    original edge-to-edge query hit: `--frames 12`, both endpoints outside the
+    mask, R(S) undefined for every schedule.
+
+    **j** is the hazard's own y for the hazard query, so the straight line
+    from start to goal runs through the pothole and the planner has to decide.
+
+    The margin is the run-in an 8-connected planner needs to offset around the
+    hazard and come back: it can move one cell laterally per cell forward, so
+    clearing a hazard of radius `r` and returning needs about `4r` of run-in
+    at each end. Less than that and the endpoints sit on top of the hazard,
+    which is a sidestep rather than a decision.
+    """
+    if which not in PLAN_QUERIES:
+        raise ValueError(f"query must be one of {PLAN_QUERIES}, not {which!r}")
+    x0, y0, vx, _ = window_origin(vehicle_xy_m)
+    c = plan_cell_m()
+    if which == "control":
+        j = PLAN_N // 2 - PLAN_LANE_CELLS
+        return (1, j), (PLAN_N - 2, j)
+
+    assert_hazard_in_window(vehicle_xy_m)
+    blind_m = float(load_thresholds()["sensor"]["blind_cone_m"])
+    i_start = 1
+    i_goal = min(PLAN_N - 2, int(np.floor((vx - blind_m - x0) / c - 0.5)))
+    i_hazard = int(np.floor((POTHOLE_XY_M[0] - x0) / c))
+    j = int(np.floor((POTHOLE_XY_M[1] - y0) / c))
+
+    margin = int(np.ceil(4.0 * POTHOLE_RADIUS_M / c))
+    if not (i_start + margin <= i_hazard <= i_goal - margin):
+        raise ValueError(
+            f"the hazard query needs the pothole at i={i_hazard} to sit at "
+            f"least {margin} cells inside the run from i={i_start} to "
+            f"i={i_goal}, and it does not. The goal is capped at the last cell "
+            f"outside the {blind_m:.2f} m blind cone behind the vehicle, so "
+            "this is a statement about the frame count: the window is placed "
+            f"{-PLAN_BEHIND_M:.1f} m behind the final pose and the pothole is "
+            f"at x={POTHOLE_XY_M[0]:.1f} m. Run scripts/plan_query_survey.py "
+            "to see the window."
+        )
+    return (i_start, j), (i_goal, j)
 
 
 def costmaps_for(gm, reference, vehicle_xy_m):
@@ -119,27 +236,28 @@ def costmaps_for(gm, reference, vehicle_xy_m):
       out as a confident zero. Worth being explicit about, because that
       failure produces a *better-looking* number than the truth.
     """
-    vx, vy = ((float(vehicle_xy_m), 0.0) if np.isscalar(vehicle_xy_m)
-              else (float(vehicle_xy_m[0]), float(vehicle_xy_m[1])))
-    x0 = vx + PLAN_BEHIND_M
-    y0 = vy + PLAN_Y0_M
+    x0, y0, vx, vy = window_origin(vehicle_xy_m)
     return (costmap_from_reference(reference, x0, y0, PLAN_N, PLAN_N),
             costmap_from_gridmap(gm, x0, y0, PLAN_N, PLAN_N,
                                  vehicle_xy_m=(vx, vy)))
 
 
-def plan_regret_for(gm, reference, vehicle_xy_m, mask=None):
+def plan_regret_for(gm, reference, vehicle_xy_m, mask=None, which="hazard"):
     """R(S) for one map, through query() only. Math §8.1.
 
     `mask` restricts both maps to the common support -- ground every schedule
-    in the comparison observed. Without it the number measures fill rate
-    rather than coarsening; see the confound note in eval/plan_regret.py.
+    in the comparison CONFIDENTLY observed. Without it the number measures
+    fill rate rather than coarsening; see the confound note in
+    eval/plan_regret.py.
+
+    `which` selects the query: "hazard" runs through the pothole, "control"
+    down the original off-centre lane that nothing is on. Report both.
     """
     star, mine = costmaps_for(gm, reference, vehicle_xy_m)
     if mask is not None:
         star, mine = restrict(star, mask), restrict(mine, mask)
-    lane = PLAN_N // 2 - PLAN_LANE_CELLS
-    return regret(star, mine, (1, lane), (PLAN_N - 2, lane))
+    start, goal = plan_query(which, vehicle_xy_m)
+    return regret(star, mine, start, goal)
 
 
 def main():
@@ -193,10 +311,19 @@ def main():
             if args.confound:
                 _, mine = costmaps_for(gm, reference, vehicle_x)
                 raw_u = plan_regret_for(gm, reference, vehicle_x)
+                # ⚑ This read `mine.unknown` -- never-observed -- and the
+                #   column is headed "low-confidence". They are different
+                #   arrays: on this sweep 0.9% against 91.9%, and the small
+                #   one was being quoted as evidence the confound had closed.
+                #   `low_confidence` is bit 5, which is the set `w_unknown` is
+                #   actually charged on.
                 unrestricted.append((schedule.name, raw_u,
-                                     float(np.mean(mine.unknown))))
+                                     float(np.mean(mine.low_confidence))))
+            ctrl = plan_regret_for(gm, reference, vehicle_x, mask, "control")
             if schedule.name.startswith("uniform"):
-                rows.append((result, plan_regret_for(gm, reference, vehicle_x, mask)))
+                rows.append((result,
+                             plan_regret_for(gm, reference, vehicle_x, mask),
+                             ctrl))
                 continue
             print(format_result(result, schedule))
             print(f"  transient: {stats.dynamic_points:,} dynamic returns routed "
@@ -210,21 +337,30 @@ def main():
             reg = plan_regret_for(gm, reference, vehicle_x, mask)
             raw = plan_regret_for(gm, reference, vehicle_x)
             print(f"  plan regret R(S) = {reg.regret:.3f} on the common support   "
-                  f"({raw.regret:.3f} unrestricted, path {raw.unknown_fraction:.0%} "
-                  f"unknown -- that number measures fill rate, not coarsening)")
+                  f"({raw.regret:.3f} unrestricted, path "
+                  f"{raw.low_confidence_fraction:.0%} below n_min / "
+                  f"{raw.unknown_fraction:.0%} unobserved -- those measure fill "
+                  f"rate, not coarsening)")
+            print(f"  control query R(S) = {ctrl.regret:.3f} down the lane "
+                  f"nothing is on -- this one is SUPPOSED to be 0.000")
             print()
-            rows.append((result, reg))
+            rows.append((result, reg, ctrl))
 
         print("§8.2, the money plot: memory on x, plan regret on y.")
         print("  R(S) = J_M*(pi_S) - J_M*(pi*), BOTH paths scored on M*.")
+        print("  The query runs through the pothole; `control` is the same "
+              "sweep down a lane")
+        print("  no hazard is on, and it is the negative control -- it must "
+              "read 0.000.")
         print(f"  {'schedule':<12} {'MB':>7} {'cells':>10} {'RMSE':>7} {'rho':>6} "
-              f"{'R(S)':>8} {'frechet':>8} {'unknown':>8}")
-        for r, reg in rows:
+              f"{'R(S)':>8} {'control':>8} {'frechet':>8} {'unknown':>8}")
+        for r, reg, ctrl in rows:
             m = memory_vs_regret_row(r, reg)
             blocked = " BLOCKED" if m["blocked_on_reference"] else ""
             print(f"  {m['schedule']:<12} {m['megabytes']:>7.2f} "
                   f"{m['logical_cells']:>10,} {m['worst_ring_rmse_cm']:>6.2f}c "
                   f"{m['mean_rho']:>6.2f} {m['regret']:>8.3f} "
+                  f"{ctrl.regret:>8.3f} "
                   f"{m['frechet_m']:>7.2f}m {m['unknown_fraction']:>7.1%}{blocked}")
         if unrestricted:
             print()

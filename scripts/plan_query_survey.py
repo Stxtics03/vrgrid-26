@@ -349,30 +349,30 @@ def main() -> int:
     print("5. COMMON SUPPORT, AND WHAT IT DOES NOT RESTRICT")
     print(f"   {mask.mean():.1%} of the window was observed by every schedule")
     print()
-    print("   ⚑ `common_support()` masks on `CostMap.unknown`, which is "
-          "NEVER-OBSERVED -- in")
-    print("     `costmap_from_gridmap` it is `not seen` over 25 samples, so "
-          "one observed")
-    print("     sub-cell in twenty-five clears it. Bit 5 (confidence, n < "
-          "n_min) is a")
-    print("     different set, it is OR-ed across the same 25 samples so one "
-          "thin sub-cell")
-    print("     sets it, and it charges the same `w_unknown`. The mask does "
-          "not remove it.")
+    print("   The mask is on `unknown` (never observed). It is NOT on bit 5:"
+          " masking on bit 5")
+    print("   drops the hazard cells themselves -- a 40 cm hole is what a "
+          "LiDAR gets fewest")
+    print("   returns from -- and disconnects the corridor. Since Day 5 "
+          "`restrict()` removes")
+    print("   the `w_unknown` charge inside the mask instead, so the column "
+          "below is reported")
+    print("   rather than charged.")
     print(f"   {'schedule':<14} {'below n_min':>12} "
           f"{'still inside the mask':>22} {'of the mask':>12}")
     kept = max(1, int(np.count_nonzero(mask)))
     for name, mine in mines:
-        low = soft_masks(mine, w)["low_confidence"]
+        low = np.asarray(mine.low_confidence, dtype=bool)
         inside = int(np.count_nonzero(low & mask))
         print(f"   {name:<14} {low.mean():>11.1%} {inside:>22,} "
               f"{inside / kept:>11.1%}")
-    print("   A schedule paying `w_unknown` on most of the restricted window "
-          "is not being")
-    print("   measured for coarsening. `PlanResult.unknown_fraction` reads "
-          "`unknown`, not")
-    print("   this, so it reports the first column of section 3 rather than "
-          "this one.")
+    print("   'still inside the mask' is what `restrict()` neutralises. It "
+          "is fill rate --")
+    print("   a function of sequence length, not of cell size -- so it is "
+          "read next to R(S)")
+    print("   rather than folded into it. A regret over a path that is "
+          "mostly thin still")
+    print("   says the sequence was too short.")
     lane_j = sweep.PLAN_N // 2 - sweep.PLAN_LANE_CELLS
     print(f"   current query's lane (j={lane_j}, y={lane_y:+.2f} m): "
           f"{mask[:, lane_j].mean():.1%} supported")

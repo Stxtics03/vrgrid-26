@@ -505,9 +505,13 @@ def _nanmean(values) -> float:
 def memory_vs_regret_row(result: Result, regret=None) -> dict:
     """One point of the Day-4 headline curve. Math §8.2.
 
-    x is memory, y is R(S). The curve has a knee and the schedule should sit
-    at it: "below 8.9 MB the plan is unchanged -- regret is exactly zero --
-    and above the knee it degrades measurably."
+    x is memory, y is R(S). What the synthetic sweep actually produces is a
+    CLIFF rather than a knee, and that is the scene rather than the metric:
+    its only impassable feature is one 40 cm pothole, so a schedule either
+    resolves it -- R(S) exactly 0, the plan is unchanged -- or smooths it away
+    and plans through it, which is `blocked_on_reference` and infinite. A
+    graded curve needs a graded cost field and the synthetic terrain has one
+    cost value; see `scripts/plan_query_survey.py`.
 
     `regret` is a `plan_regret.Regret`. Its `unknown_fraction` travels with it
     on purpose: zero regret along a mostly-unknown path says the sequence was
@@ -525,5 +529,12 @@ def memory_vs_regret_row(result: Result, regret=None) -> dict:
         "regret": None if regret is None else regret.regret,
         "frechet_m": None if regret is None else regret.frechet_m,
         "unknown_fraction": None if regret is None else regret.unknown_fraction,
+        # Fill rate, reported and not charged -- `restrict()` removes the
+        # w_unknown surcharge inside the common support, because it lands
+        # almost entirely on the FINE schedules and is a function of sequence
+        # length rather than cell size. Zero regret over a mostly-thin path
+        # still says the sequence was too short.
+        "low_confidence_fraction": (None if regret is None
+                                    else regret.low_confidence_fraction),
         "blocked_on_reference": None if regret is None else regret.blocked_on_reference,
     }

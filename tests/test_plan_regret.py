@@ -13,6 +13,7 @@ from vrgrid.eval.harness import build_gridmap, run_sequence
 from vrgrid.eval.plan_regret import (
     BLOCKED,
     CostMap,
+    common_support,
     corridor,
     costmap_from_gridmap,
     costmap_from_reference,
@@ -20,6 +21,7 @@ from vrgrid.eval.plan_regret import (
     path_cost,
     plan,
     regret,
+    restrict,
     weights,
 )
 from vrgrid.eval.reference_map import build_from_scans
@@ -400,3 +402,104 @@ def test_regret_runs_end_to_end_through_the_query_api(scene):
     assert out.found, "no path across 8 m of road"
     assert out.regret >= -1e-9
     assert 0.0 <= out.unknown_fraction <= 1.0
+
+
+# --- the two Day-5 defects, each with the test that fails if the fix is undone
+
+
+def _lowconf(cost, low, unknown=None):
+    cost = np.asarray(cost, dtype=float)
+    return CostMap(CELL, 0.0, 0.0, cost,
+                   np.zeros(cost.shape, bool) if unknown is None else unknown,
+                   np.asarray(low, dtype=bool))
+
+
+def test_restrict_removes_the_confidence_surcharge_inside_the_mask():
+    """The fill-rate confound, and the whole reason `restrict` takes weights.
+
+    Inside the common support every map has observed every cell, so the
+    `w_unknown` bit 5 carries there is a statement about how many returns
+    landed in a cell, not about coarsening -- and it lands almost entirely on
+    the FINE schedules, because a 5 cm cell holds fewer returns than an 80 cm
+    one by construction. Left in, it was 91.9% of the restricted window for
+    5/10/20/40 against 4.1% for uniform 20 cm.
+    """
+    w_u = float(weights().get("w_unknown", 4.0))
+    cost = np.full((4, 4), 1.0 + w_u)
+    low = np.ones((4, 4), bool)
+    mask = np.ones((4, 4), bool)
+
+    kept = restrict(_lowconf(cost, low), mask)
+    assert np.allclose(kept.cost, 1.0)
+
+    raw = restrict(_lowconf(cost, low), mask, neutralise_confidence=False)
+    assert np.allclose(raw.cost, 1.0 + w_u)
+
+
+def test_restrict_does_not_relax_a_cell_outside_the_mask():
+    """Outside the mask a cell is impassable at any price -- the surcharge is
+    not removed there, because the cell is not scored at all."""
+    w_u = float(weights().get("w_unknown", 4.0))
+    cost = np.full((4, 4), 1.0 + w_u)
+    mask = np.zeros((4, 4), bool)
+    mask[0, 0] = True
+    out = restrict(_lowconf(cost, np.ones((4, 4), bool)), mask)
+    assert out.cost[0, 0] == pytest.approx(1.0)
+    assert not np.isfinite(out.cost[1, 1])
+
+
+def test_restrict_leaves_an_impassable_cell_impassable():
+    """Neutralising a surcharge must never resurrect a wall: `inf - 4` is
+    still `inf`, and a version that subtracted before checking finiteness
+    would turn a hazard into a cheap cell."""
+    cost = np.full((4, 4), BLOCKED)
+    out = restrict(_lowconf(cost, np.ones((4, 4), bool)), np.ones((4, 4), bool))
+    assert not np.isfinite(out.cost).any()
+
+
+def test_common_support_masks_on_unknown_not_on_confidence():
+    """The regression that made the first attempt at this fix worse.
+
+    Masking on bit 5 drops exactly the cells a hazard lives in -- a 40 cm hole
+    is what a LiDAR gets fewest returns from -- so both maps call the pothole
+    impassable for the same wrong reason and the metric measures nothing.
+    """
+    a = _lowconf(np.ones((4, 4)), low=np.ones((4, 4), bool))
+    b = _lowconf(np.ones((4, 4)), low=np.zeros((4, 4), bool))
+    assert common_support(a, b).all()
+
+    unseen = np.zeros((4, 4), bool)
+    unseen[2, 2] = True
+    c = _lowconf(np.ones((4, 4)), low=np.zeros((4, 4), bool), unknown=unseen)
+    assert not common_support(a, c)[2, 2]
+
+
+def test_a_step_is_a_wall_or_not_depending_on_the_lattice_it_is_measured_on():
+    """The lattice defect, as the one line of arithmetic that caused it.
+
+    §7.1 compares a gradient against a single `tan(theta_max)` whatever the
+    cell size, but a step of `h` reads as `h / 2c` at cell size `c`. The 12 cm
+    kerb is therefore a wall on a 5 cm ring and flat ground on M*'s 25 cm
+    planning lattice -- which is why `costmap_from_gridmap` must evaluate
+    §7.1 where `costmap_from_reference` does, not where the map happens to be
+    stored.
+    """
+    t = load_thresholds()["traversability"]
+    tan_max = np.tan(np.radians(t["theta_max_deg"]))
+    kerb_m = 0.12
+
+    assert kerb_m / (2 * 0.05) > tan_max      # a wall on ring 0
+    assert kerb_m / (2 * 0.10) > tan_max      # a wall at 10 cm
+    assert kerb_m / (2 * 0.20) < tan_max      # not a wall at 20 cm
+    assert kerb_m / (2 * 0.25) < tan_max      # not a wall on M*
+    # ...and its step never fires at any of them, so the slope bit is the
+    # entire mechanism.
+    assert kerb_m < t["s_max_m"]
+
+
+def test_costmap_from_gridmap_rejects_an_unknown_predicate():
+    """Silently falling back to one of the two would make a table that mixes
+    predicates and cannot be compared."""
+    with pytest.raises(ValueError, match="predicate"):
+        costmap_from_gridmap(build_gridmap(load("5/10/20/40")), 0.0, 0.0, 2, 2,
+                             predicate="whatever")

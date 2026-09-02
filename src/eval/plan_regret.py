@@ -102,6 +102,7 @@ condition under which the headline number means anything.
 
 import heapq
 import itertools
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -148,7 +149,20 @@ class CostMap:
     x0_m: float
     y0_m: float
     cost: np.ndarray            # (nx, ny)
-    unknown: np.ndarray         # (nx, ny) bool, for the fraction report
+    unknown: np.ndarray         # (nx, ny) bool -- NEVER OBSERVED
+    low_confidence: np.ndarray = None   # (nx, ny) bool -- observed, n < n_min
+
+    def __post_init__(self):
+        # ⚑ `unknown` and `low_confidence` are different sets and confusing
+        #   them is how the fill-rate confound survived a fix. `unknown` is
+        #   never-observed; `low_confidence` is bit 5, which is what
+        #   `_cost_from_bits` actually charges `w_unknown` for -- and it is a
+        #   strict superset, because a cell nobody looked at is not confident
+        #   either. On the synthetic sweep the two were 0.9% and 91.9% of the
+        #   same window. Defaulting to `unknown` keeps hand-built costmaps in
+        #   tests valid; every real builder sets it.
+        if self.low_confidence is None:
+            self.low_confidence = np.asarray(self.unknown, dtype=bool)
 
     @property
     def shape(self):
@@ -186,44 +200,86 @@ def _cost_from_bits(trav, unknown, w) -> np.ndarray:
 
 def costmap_from_gridmap(gm, x0_m, y0_m, nx, ny, cell_m=None,
                          vehicle_xy_m=(0.0, 0.0), thresholds=None,
-                         samples: int = 5) -> CostMap:
+                         samples: int = 5, predicate: str = "planning") -> CostMap:
     """M_S -> a planning costmap, entirely through `query()`.
 
     Every planning cell is `samples x samples` `query()` calls over its
-    footprint, combined conservatively: the bitfield is OR-ed, so a hazard
-    anywhere in the cell blocks it, and the cell counts as observed if ANY
-    sample was observed.
+    footprint. What is done with those samples depends on what the bit MEANS,
+    and getting that wrong is the whole of two defects found on Day 5.
 
-    ⚑ A single query at the cell centre is wrong, and wrong in a way that
-      looks fine. A 25 cm planning cell over a 5 cm ring covers 25 map cells;
-      at ring 0's fill rate most of them are the gaps between beam tracks, so
-      centre-sampling picks an unobserved cell about four times in five and
-      the planner sees a map that is mostly holes. The finer the schedule,
-      the worse it looks -- exactly backwards. It also makes the common
-      support of several schedules disconnected, so no path exists at all,
-      which is how this was found.
+    --- `predicate="planning"` (default): §7.1 on the PLANNING lattice -------
 
-      OR-ing the bits is the same rule as §7.2's conservative pyramid: a block
-      is safe only if every cell in it is. Doing it by sampling rather than by
-      a pyramid is slower and needs no new structure; when
-      `query_conservative()` lands this should call it instead.
+    The samples are reduced to one ground height and one within-cell variance
+    per planning cell, and slope, step and roughness are then computed by the
+    SAME `_slope` / `_max_step` / variance test that `costmap_from_reference`
+    applies to M*'s block statistics -- literally the same functions, on the
+    same lattice, at the same threshold.
+
+    ⚑ This is not a refinement, it is a correctness fix, and the old
+      behaviour is `predicate="map"` only so the old numbers can be
+      reproduced. §7.1's thresholds are NOT scale-invariant: a step of `h`
+      reads as a gradient of `h / 2c` at cell size `c`, so a 12 cm kerb is
+      `1.20` on a 5 cm ring, `0.60` at 10 cm and `0.24` at 25 cm, against a
+      flat `tan(20 deg) = 0.364`. M* is evaluated at `plan.cell_m` because
+      `costmap_from_reference` blocks it down before setting any bit. So under
+      `"map"` the two sides of eq. (23) applied the same predicate at
+      DIFFERENT lattices, and the frozen schedules walled both kerbs into a
+      corridor -- 154 cells M* calls flat -- while missing 10 of M*'s 12 real
+      walls. The only schedule that agreed with M* was uniform 20 cm, and it
+      agreed because its lattice was nearest M*'s, not because it was a good
+      map. R(S) was measuring where a 12 cm kerb crosses a 20 degree
+      threshold.
+
+    Clearance and class are absent on BOTH sides, which is the price of
+    symmetry and is stated rather than hidden. M* is 2.5D ground with no
+    ceiling, so it can never set clearance; and although `ReferenceMap` does
+    carry `class_id`, `costmap_from_reference` is built from `block_stats`,
+    which is heights. Charging `w_class` on M_S against a reference that
+    cannot charge it is a bias, not a measurement -- so under `"planning"` the
+    comparison is geometric on both sides. Giving M* a block-majority class
+    channel is the way to put it back, and until someone does, this is the
+    honest version.
+
+    --- how the samples combine, per bit ------------------------------------
+
+    A hazard is OR-ed: present anywhere in the cell, the cell is unsafe. That
+    is §7.2's conservative-pyramid rule and it is right for bits 0-2.
+
+    ⚑ Bit 5 is NOT a hazard and must not use that rule. It says "too few
+      observations to judge", so OR-ing it marks a planning cell
+      low-confidence if ANY of its 25 sub-samples is thin -- which at ring 0's
+      fill rate is essentially always, and it charged `w_unknown` on 91.9% of
+      the window for the frozen schedules against 4.1% for uniform 20 cm.
+      That is the fill-rate confound reappearing as a weight, and
+      `common_support()` did not remove it because that masks on `unknown`,
+      a different array. Confidence is therefore combined the same way
+      `unknown` already was -- the cell is confident if ANY sample is -- which
+      makes the two consistent instead of exactly inverted.
 
     Slow, and deliberately so: the claim being demonstrated is that a planner
     can treat this map as uniform, and reaching into the rings to go faster
     here would assume away the thing under test.
     """
+    if predicate not in ("planning", "map"):
+        raise ValueError(f"predicate must be 'planning' or 'map', not {predicate!r}")
     th = thresholds if thresholds is not None else gm.thresholds
     w = weights(th)
+    t = th["traversability"]
     cell_m = float(w.get("cell_m", 0.25)) if cell_m is None else cell_m
     samples = max(1, int(samples))
     offsets = (np.arange(samples) + 0.5) / samples
+    n_min = int(t["n_min"])
 
-    trav = np.zeros((nx, ny), dtype=np.uint8)
+    hazard = np.zeros((nx, ny), dtype=np.uint8)      # OR of the map's own bits
     unknown = np.ones((nx, ny), dtype=bool)
+    low_conf = np.ones((nx, ny), dtype=bool)
+    z = np.full((nx, ny), np.nan)
+    var = np.zeros((nx, ny), dtype=float)
     for i in range(nx):
         for j in range(ny):
             bits = 0
-            seen = False
+            heights = []
+            confident = False
             for du in offsets:
                 wx = x0_m + (i + du) * cell_m - vehicle_xy_m[0]
                 for dv in offsets:
@@ -231,11 +287,32 @@ def costmap_from_gridmap(gm, x0_m, y0_m, nx, ny, cell_m=None,
                     q = query(gm, wx, wy)
                     if q.occupancy == OCC_UNKNOWN:
                         continue
-                    seen = True
                     bits |= q.traversability
-            trav[i, j] = bits
-            unknown[i, j] = not seen
-    return CostMap(cell_m, x0_m, y0_m, _cost_from_bits(trav, unknown, w), unknown)
+                    heights.append(q.ground_height)
+                    if q.confidence >= n_min:
+                        confident = True
+            hazard[i, j] = bits
+            unknown[i, j] = not heights
+            low_conf[i, j] = not confident
+            if heights:
+                z[i, j] = float(np.mean(heights))
+                var[i, j] = float(np.var(heights))
+
+    if predicate == "map":
+        # Byte-for-byte the pre-Day-5 behaviour, kept so the old table can be
+        # reproduced and the change can be audited rather than believed.
+        trav = hazard
+        low_conf = (hazard & TRAV_CONFIDENCE).astype(bool) | unknown
+    else:
+        trav = np.zeros((nx, ny), dtype=np.uint8)
+        trav |= np.where(_slope(z, cell_m) > np.tan(np.radians(t["theta_max_deg"])),
+                         TRAV_SLOPE, 0).astype(np.uint8)
+        trav |= np.where(_max_step(z) > t["s_max_m"], TRAV_STEP, 0).astype(np.uint8)
+        trav |= np.where(var > t["sigma2_max_m2"], TRAV_ROUGHNESS, 0).astype(np.uint8)
+        trav |= np.where(low_conf, TRAV_CONFIDENCE, 0).astype(np.uint8)
+
+    return CostMap(cell_m, x0_m, y0_m, _cost_from_bits(trav, unknown, w),
+                   unknown, low_conf)
 
 
 def costmap_from_reference(reference, x0_m, y0_m, nx, ny, cell_m=None,
@@ -243,10 +320,21 @@ def costmap_from_reference(reference, x0_m, y0_m, nx, ny, cell_m=None,
     """M* -> a planning costmap, by applying §7.1 to the reference heights.
 
     The same predicate as the map under test, on the same lattice, so eq. (23)
-    subtracts like from like. Clearance is absent -- M* is 2.5D ground and has
-    no ceiling -- which is stated rather than hidden: regret measures what
-    COARSENING costs, and a condition the reference cannot evaluate would
-    otherwise be scored as a difference between the two maps.
+    subtracts like from like. That sentence was the intent and was not true
+    until Day 5: `costmap_from_gridmap` applied §7.1 at the MAP's cell size
+    while this applies it at `plan.cell_m`, and §7.1's thresholds are not
+    scale-invariant. Its `predicate="planning"` path is what makes the two
+    lattices actually match; see the note there.
+
+    Clearance is absent -- M* is 2.5D ground and has no ceiling -- which is
+    stated rather than hidden: regret measures what COARSENING costs, and a
+    condition the reference cannot evaluate would otherwise be scored as a
+    difference between the two maps. ⚑ Bit 4 (class) is absent for a weaker
+    reason and it was not stated at all: `ReferenceMap` DOES carry `class_id`,
+    but this builds from `block_stats`, which is heights. Rather than let M_S
+    be charged `w_class` against a reference that cannot charge it,
+    `predicate="planning"` drops class from M_S too. A block-majority class
+    channel here is what would let both sides carry it.
 
     Slope and step come from the block means, roughness from the block
     variance -- all three straight out of `block_stats`, which is the same
@@ -279,9 +367,11 @@ def costmap_from_reference(reference, x0_m, y0_m, nx, ny, cell_m=None,
                      TRAV_SLOPE, 0).astype(np.uint8)
     trav |= np.where(_max_step(z) > t["s_max_m"], TRAV_STEP, 0).astype(np.uint8)
     trav |= np.where(var * 1e-4 > t["sigma2_max_m2"], TRAV_ROUGHNESS, 0).astype(np.uint8)
-    trav |= np.where(n < t["n_min"], TRAV_CONFIDENCE, 0).astype(np.uint8)
+    low_conf = n < t["n_min"]
+    trav |= np.where(low_conf, TRAV_CONFIDENCE, 0).astype(np.uint8)
 
-    return CostMap(cell_m, x0_m, y0_m, _cost_from_bits(trav, unknown, w), unknown)
+    return CostMap(cell_m, x0_m, y0_m, _cost_from_bits(trav, unknown, w),
+                   unknown, low_conf)
 
 
 def _neighbour_diffs(z):
@@ -302,7 +392,18 @@ def _neighbour_diffs(z):
 
 
 def _max_step(z):
-    with np.errstate(invalid="ignore"):
+    """Largest 4-neighbour step per cell, 0 where every neighbour is unknown.
+
+    A cell whose four neighbours are all nan -- an interior hole, or a window
+    corner where two edges meet -- is an all-nan slice, and `nanmax` warns on
+    it and returns nan. `nan_to_num` already turns that into the 0.0 we want
+    (no evidence of a step is not a step), so the warning is noise. `errstate`
+    does not silence it: it is a RuntimeWarning from `nanmax` itself, not a
+    floating-point error state, which is why one was printed on every run.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", "All-NaN slice encountered",
+                                RuntimeWarning)
         stacked = np.stack(_neighbour_diffs(z))
         return np.nan_to_num(np.nanmax(stacked, axis=0), nan=0.0)
 
@@ -326,6 +427,12 @@ class PlanResult:
     cost: float = float("inf")
     unknown_fraction: float = float("nan")
     expanded: int = 0
+    # ⚑ `unknown_fraction` is the never-observed fraction and it is NOT what
+    #   `w_unknown` is charged on. This is: bit 5, `n < n_min`. The two read
+    #   0.9% and 91.9% of the same window on the synthetic sweep, and the
+    #   smaller one was the number being quoted as evidence the confound was
+    #   closed. Read this one.
+    low_confidence_fraction: float = float("nan")
 
     @property
     def found(self) -> bool:
@@ -410,8 +517,11 @@ def _unwind(came, node):
 
 
 def _result(costmap, path, cost, expanded) -> PlanResult:
-    unknown = np.mean([costmap.unknown[c] for c in path]) if path else float("nan")
-    return PlanResult(path, float(cost), float(unknown), expanded)
+    if not path:
+        return PlanResult(path, float(cost), float("nan"), expanded, float("nan"))
+    unknown = float(np.mean([costmap.unknown[c] for c in path]))
+    low = float(np.mean([costmap.low_confidence[c] for c in path]))
+    return PlanResult(path, float(cost), unknown, expanded, low)
 
 
 def path_cost(costmap: CostMap, path) -> float:
@@ -448,6 +558,7 @@ class Regret:
     self_scored_cost: float      # the WRONG metric, kept for the comparison
     found: bool
     blocked_on_reference: bool = False
+    low_confidence_fraction: float = float("nan")
 
 
 def regret(reference_map: CostMap, compressed_map: CostMap, start, goal) -> Regret:
@@ -473,7 +584,8 @@ def regret(reference_map: CostMap, compressed_map: CostMap, start, goal) -> Regr
     mine = plan(compressed_map, start, goal)
     if not (star.found and mine.found):
         return Regret(float("nan"), star.cost, float("inf"), float("nan"),
-                      mine.unknown_fraction, mine.cost, False)
+                      mine.unknown_fraction, mine.cost, False,
+                      low_confidence_fraction=mine.low_confidence_fraction)
 
     # ⚑ Two failures live in this one number and they are not the same failure.
     # A coarse map that routes AROUND a lost gap costs more: finite regret, a
@@ -490,6 +602,7 @@ def regret(reference_map: CostMap, compressed_map: CostMap, start, goal) -> Regr
         scored_cost=scored,
         frechet_m=frechet(reference_map, mine.path, star.path),
         unknown_fraction=mine.unknown_fraction,
+        low_confidence_fraction=mine.low_confidence_fraction,
         self_scored_cost=mine.cost,
         found=True,
     )
@@ -503,27 +616,65 @@ def common_support(*costmaps) -> np.ndarray:
     fractions of the same sequence, and the difference is fill rate rather
     than information loss -- see the confound note at the top of this file.
 
+    ⚑ This masks on `unknown` -- never observed -- and NOT on `low_confidence`,
+      which is the larger set `w_unknown` is actually charged on. That is
+      deliberate and it was tried the other way first: masking on bit 5 drops
+      the hazard cells themselves, because a 40 cm hole is exactly the thing a
+      LiDAR gets few returns from, and it punches enough holes in the far rows
+      to disconnect the corridor. Both maps then call the pothole impassable
+      for the same wrong reason and no path exists at all. The confidence
+      charge is dealt with in `restrict()` instead, where it can be removed
+      without removing the cell.
+
     Returns a boolean mask to pass to `restrict()`.
     """
-    mask = ~costmaps[0].unknown
+    mask = ~np.asarray(costmaps[0].unknown, dtype=bool)
     for c in costmaps[1:]:
         if not costmaps[0].same_lattice(c):
             raise ValueError("common support needs one lattice for every map")
-        mask &= ~c.unknown
+        mask &= ~np.asarray(c.unknown, dtype=bool)
     return mask
 
 
-def restrict(costmap: CostMap, mask) -> CostMap:
+def restrict(costmap: CostMap, mask, neutralise_confidence: bool = True,
+             thresholds=None) -> CostMap:
     """A costmap that exists only where `mask` holds; elsewhere impassable.
 
     Impassable rather than merely expensive on purpose: a cell outside the
     common support must not be routed through at ANY price, or the restriction
     leaks back in as a weight and the comparison is confounded again by how
     much each map declined to look at.
+
+    ⚑ `neutralise_confidence` is the other half of that, and without it the
+      restriction does not do its job. Inside the mask every map in the
+      comparison has observed every cell, so the `w_unknown` surcharge bit 5
+      carries there is a statement about how many returns landed in a cell --
+      fill rate -- and not about coarsening. Left in, it is charged almost
+      entirely against the FINE schedules, because a 5 cm cell holds fewer
+      returns than an 80 cm one by construction: measured on the synthetic
+      sweep it was 91.9% of the restricted window for 5/10/20/40 against 4.1%
+      for uniform 20 cm, which is 5.0 against 1.0 per cell over almost the
+      whole window. A schedule was being charged for resolving finely, which
+      is precisely backwards, and it was the dominant term in every R(S) in
+      the table.
+
+      Removed here rather than hidden: `PlanResult.low_confidence_fraction`
+      and `Regret.low_confidence_fraction` report the same set alongside the
+      number, because a regret measured over a path that is mostly thin is
+      still telling you the sequence was too short. It is reported, not
+      charged.
+
+      Pass `neutralise_confidence=False` to reproduce the pre-Day-5 numbers.
     """
-    cost = np.where(mask, costmap.cost, BLOCKED)
+    mask = np.asarray(mask, dtype=bool)
+    cost = np.array(costmap.cost, dtype=float, copy=True)
+    if neutralise_confidence:
+        w_u = float(weights(thresholds).get("w_unknown", 4.0))
+        relax = mask & np.asarray(costmap.low_confidence, dtype=bool) & np.isfinite(cost)
+        cost = np.where(relax, cost - w_u, cost)
+    cost = np.where(mask, cost, BLOCKED)
     return CostMap(costmap.cell_m, costmap.x0_m, costmap.y0_m, cost,
-                   costmap.unknown & mask)
+                   costmap.unknown & mask, costmap.low_confidence & mask)
 
 
 def frechet(costmap: CostMap, path_a, path_b) -> float:

@@ -101,10 +101,12 @@ import tempfile
 from itertools import pairwise
 from pathlib import Path
 
+import eval_synthetic as sweep
+
 # `scripts/` is sys.path[0] when this is run as a script, so the sweep is
 # imported from the one place it already lives rather than reimplemented. A
 # second copy of the orchestration is how the figure and the table drift.
-import eval_synthetic as sweep
+import numpy as np
 from vrgrid.eval.harness import build_gridmap, evaluate, memory_vs_regret_row, run_sequence
 from vrgrid.eval.plan_regret import common_support
 from vrgrid.eval.reference_map import build_from_scans
@@ -113,7 +115,8 @@ from vrgrid.grid.schedule import load
 from vrgrid.grid.transient import TrackList
 
 FIELDS = ("schedule", "megabytes", "logical_cells", "worst_ring_rmse_cm",
-          "mean_rho", "regret", "frechet_m", "unknown_fraction",
+          "mean_rho", "regret", "control_regret", "frechet_m",
+          "unknown_fraction", "low_confidence_fraction",
           "blocked_on_reference")
 
 CAVEAT = ("SYNTHETIC SEQUENCE - NOT REPORTABLE: analytic terrain, "
@@ -148,7 +151,14 @@ def collect(root, frames: int) -> list:
     rows = []
     for _, gm, result in built:
         reg = sweep.plan_regret_for(gm, reference, vehicle_x, mask)
-        rows.append(memory_vs_regret_row(result, reg))
+        ctrl = sweep.plan_regret_for(gm, reference, vehicle_x, mask, "control")
+        row = memory_vs_regret_row(result, reg)
+        # The negative control travels in the CSV, not just in the terminal.
+        # Its job is to read 0.0 for every schedule: same maps, same window,
+        # a query no hazard is on. If it ever moves, the hazard column is not
+        # measuring the hazard.
+        row["control_regret"] = ctrl.regret
+        rows.append(row)
     return rows, float(mask.mean())
 
 
@@ -190,40 +200,100 @@ def draw(rows, path: Path, mask_frac: float, frames: int) -> bool:
     except ImportError:
         return False
 
-    ours = [r for r in rows if not r["schedule"].startswith("uniform")]
-    base = [r for r in rows if r["schedule"].startswith("uniform")]
+    # ⚑ A blocked schedule has R(S) = inf and it must not be dropped from the
+    #   figure, silently rescaled, or drawn as a very tall finite bar. It is
+    #   not an expensive detour: the map lost the hazard and the planner
+    #   routed THROUGH something M* calls impassable. That is a safety failure
+    #   and it is the most important point on the plot, so it gets its own
+    #   band, its own marker and its own legend entry, and the continuous axis
+    #   is scaled from the finite points only.
+    finite = [r for r in rows if r["regret"] is not None and np.isfinite(r["regret"])]
+    blocked = [r for r in rows if r["regret"] is not None and not np.isfinite(r["regret"])]
 
-    fig, ax = plt.subplots(figsize=(7.2, 4.6))
-    curve = sorted(rows, key=lambda r: r["megabytes"])
-    ax.plot([r["megabytes"] for r in curve], [r["regret"] for r in curve],
-            "-", color="0.75", zorder=1, linewidth=1.2)
+    span = max([r["regret"] for r in finite], default=0.0)
+
+    # ⚑ When every finite regret is exactly 0 -- which is what the synthetic
+    #   scene produces, because its only hazard is one pothole a map either
+    #   resolves or does not -- a continuous y-axis is a LIE. It draws
+    #   gridlines at 0.2, 0.4, 0.6 with no datum anywhere near them and
+    #   invites the reader to see a magnitude that was never measured. The
+    #   outcome is categorical, so the axis is: two bands, two labelled ticks,
+    #   nothing in between. The continuous axis comes back the moment a scene
+    #   produces a graded result.
+    categorical = span <= 0.0
+    y_blocked = 1.0 if categorical else span * 1.35
+
+    def y_of(r):
+        return y_blocked if r in blocked else r["regret"]
+
+    ours = [r for r in finite if not r["schedule"].startswith("uniform")]
+    base = [r for r in finite if r["schedule"].startswith("uniform")]
+
+    fig, ax = plt.subplots(figsize=(7.6, 4.8))
+    if not categorical:
+        curve = sorted(finite, key=lambda r: r["megabytes"])
+        ax.plot([r["megabytes"] for r in curve], [r["regret"] for r in curve],
+                "-", color="0.75", zorder=1, linewidth=1.2)
     ax.scatter([r["megabytes"] for r in base], [r["regret"] for r in base],
                s=46, facecolor="white", edgecolor="#4C72B0", zorder=3,
                label="uniform grid (baseline)")
     ax.scatter([r["megabytes"] for r in ours], [r["regret"] for r in ours],
                s=64, color="#C44E52", zorder=4, marker="D",
                label="ring schedule (ours)")
+    if blocked:
+        ax.axhspan(y_blocked * 0.55, y_blocked * 1.45, color="#B4342F",
+                   alpha=0.055, zorder=0)
+        ax.scatter([r["megabytes"] for r in blocked],
+                   [y_blocked] * len(blocked), s=110, marker="^",
+                   color="#B4342F", zorder=5,
+                   label=r"$R(S)=\infty$ — planned THROUGH the hazard")
+    # The negative control. Every value is 0.0 and that is the point, so it is
+    # drawn even though it is invisible as a curve -- `if any(...)` would drop
+    # it exactly when it is doing its job.
+    if all(r.get("control_regret") is not None for r in rows):
+        ax.scatter([r["megabytes"] for r in rows],
+                   [r["control_regret"] for r in rows], s=26, marker="x",
+                   color="0.5", zorder=2, linewidths=1.0,
+                   label="control query, no hazard on it (all 0.000)")
+
     # Points bunch up at the cheap end of the axis, so the labels are
     # staggered by rank rather than all placed at the same offset. Overlapping
     # text is how a figure that is correct becomes a figure nobody trusts.
     for rank, r in enumerate(sorted(rows, key=lambda r: r["megabytes"])):
-        dy = 9 if rank % 2 == 0 else -14
-        ax.annotate(r["schedule"].replace("_", "/"),
-                    (r["megabytes"], r["regret"]),
+        dy = 11 if rank % 2 == 0 else -17
+        ax.annotate(r["schedule"].replace("_", "/"), (r["megabytes"], y_of(r)),
                     textcoords="offset points", xytext=(0, dy), fontsize=7.5,
                     ha="center", color="0.35")
+
+    if categorical:
+        ax.set_ylim(-0.45, 1.55)
+        ax.set_yticks([0.0, y_blocked])
+        ax.set_yticklabels(["$0$\nplan unchanged",
+                            "$\\infty$\ndrove into it"], fontsize=8.5)
+    else:
+        ax.set_ylim(-span * 0.18, y_blocked * 1.18)
 
     ax.set_xlabel("preallocated memory (MB)")
     ax.set_ylabel(r"plan regret  $R(S) = J_{M^*}(\pi_S) - J_{M^*}(\pi^*)$")
     ax.set_title("Memory against plan regret (math §8.2)", fontsize=11)
-    ax.grid(alpha=0.25, linewidth=0.6)
-    ax.margins(x=0.10, y=0.18)
-    ax.legend(frameon=False, fontsize=8.5, loc="upper left")
+    ax.grid(alpha=0.25, linewidth=0.6, axis="x")
+    ax.margins(x=0.12)
+    # Below the axes, always. Both bands carry data and both ends of the x
+    # axis carry a label, so any in-axes corner collides with something.
+    ax.legend(frameon=False, fontsize=8.2, loc="upper center",
+              bbox_to_anchor=(0.5, -0.155), ncol=2, handletextpad=0.4,
+              columnspacing=1.6)
     ax.text(0.995, 0.985, f"{frames} frames, common support {mask_frac:.0%}",
             transform=ax.transAxes, ha="right", va="top", fontsize=7.5,
             color="0.5")
+    if blocked:
+        ax.text(0.985, 0.935,
+                "▲ the map lost the 40 cm pothole and planned through it\n"
+                "a safety failure, not an expensive detour",
+                transform=ax.transAxes, ha="right", va="top", fontsize=7.2,
+                color="#B4342F", linespacing=1.45)
     fig.text(0.5, 0.012, CAVEAT, ha="center", fontsize=7.5, color="#B4342F")
-    fig.tight_layout(rect=(0, 0.05, 1, 1))
+    fig.tight_layout(rect=(0, 0.055, 1, 1))
     fig.savefig(path, bbox_inches="tight")
     fig.savefig(path.with_suffix(".png"), dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -233,7 +303,13 @@ def draw(rows, path: Path, mask_frac: float, frames: int) -> bool:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--frames", type=int, default=16)
+    # ⚑ 16 raises. The window sits 11 m behind the final pose, so at 16
+    #   frames it is x = 19-30 m and the pothole -- the scene's only
+    #   impassable feature -- is at x = 18, outside it. `plan_query` refuses
+    #   rather than drawing a figure of two maps of empty road. 13 and 14 are
+    #   the frame counts whose window holds the hazard clear of both the
+    #   lattice border and the blind cone; see `eval_synthetic.plan_query`.
+    ap.add_argument("--frames", type=int, default=14)
     ap.add_argument("--out", default="docs/figures",
                     help="directory for regret.csv and regret.svg/.png")
     ap.add_argument("--keep", default=None,
