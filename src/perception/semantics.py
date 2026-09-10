@@ -11,12 +11,25 @@ their class is not.
 
 Why not FRNet -- and the reason CHANGED on 2 Sep. The port used to be
 non-functional (~15% point accuracy) and the honest answer was "it does not
-work". It works now: 98.3% point accuracy on seq 00 frame 43, 69.8% mIoU over
-seq 08 against the paper's 73.3% (`scripts/frnet_eval.py`). The helpers below
-still raise, but the reason is now a DELIBERATE CHOICE rather than a defect --
-taking semantics from the ground-truth .label files isolates the mapping
-contribution from segmentation quality, which is what §9's evaluation is for.
-The model is reported ALONGSIDE the map, never swapped into it.
+work". It works now: 90.3% POINT ACCURACY AND 65.2% mIoU OVER 200 FRAMES OF
+SEQ 08, against the paper's 73.3% (`scripts/frnet_eval.py --frames 200`).
+
+⚑ Two denominators, both from that same run, so quote the one you mean.
+  65.2% averages the 15 classes that actually OCCUR in seq 08; 69.8% also
+  drops `other-ground`, which has 150 ground-truth points in 22.7 M, and is
+  the figure `docs/handover-2026-09-02.md` and the research log quote. The
+  original 51.5% averaged 19 "classes", four of which have no ground truth at
+  all -- that one is simply wrong and is not a variant.
+
+⚑ 98.3% IS NOT THE HEADLINE. It is a single-frame port sanity check on seq 00
+  frame 43, and it is not comparable to a 200-frame mIoU. Pairing it with one
+  is what this docstring used to do.
+
+The helpers below still raise, but the reason is now a DELIBERATE CHOICE
+rather than a defect -- taking semantics from the ground-truth .label files
+isolates the mapping contribution from segmentation quality, which is what
+§9's evaluation is for. The model is reported ALONGSIDE the map, never
+swapped into it.
 
 ⚑ Two of the three original divergences were described wrongly, and one of the
   two was THIS FILE'S FAULT. The old note here said the port had "wrong FOV
@@ -102,7 +115,8 @@ _PORT_BROKEN = (
     "SemanticKITTI .label files on purpose, so the mapping contribution is "
     "isolated from segmentation quality (math 9). This is a project decision, "
     "not a defect -- the standalone port in src/perception/frnet/ has worked "
-    "since 2 Sep (98.3% point accuracy). Use semantic_labels(raw_labels) here; "
+    "since 2 Sep (90.3% point accuracy, 65.2% mIoU over 200 frames of seq 08). "
+    "Use semantic_labels(raw_labels) here; "
     "run scripts/frnet_eval.py to evaluate the model itself."
 )
 
@@ -292,7 +306,15 @@ class FRNetInference:
 
 
 def get_frnet(config_path: str | Path = _FRNET_YAML) -> FRNetInference:
-    """Disabled -- the standalone FRNet port is non-functional. See _PORT_BROKEN."""
+    """Disabled BY DESIGN, not because it is broken. See _PORT_BROKEN.
+
+    The port works (90.3% point accuracy, 65.2% mIoU over 200 frames of
+    seq 08). The map still takes its semantics from the ground-truth `.label`
+    files so that the mapping contribution stays isolated from segmentation
+    quality -- which is what math 9's evaluation is for, and it means no
+    mapping number in this project can come to depend on the model. Run the
+    model through `scripts/frnet_eval.py`; report it alongside the map.
+    """
     raise RuntimeError(_PORT_BROKEN)
 
 
