@@ -1,7 +1,8 @@
 # pending-review: `r7b-mIoU-69.8-is-an-error.diff`
 
 **Files touched:** `src/perception/semantics.py`, `src/perception/CLAUDE.md`
-**Applied?** NO — modifies tracked files in `src/`.
+**Applied?** **YES — applied 2026-09-12 in `f3a0337`** to `src/perception/semantics.py` and `src/perception/CLAUDE.md`, on explicit
+approval. The four *other* files that carried 69.8% were corrected separately in `c632027`. Kept as the rationale record.
 **This corrects work I did in local commit `9b40ff2`.**
 
 ## What happened

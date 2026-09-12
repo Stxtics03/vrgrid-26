@@ -2,7 +2,10 @@
 
 **File touched:** `scripts/timing_table.py` (2 lines)
 **Found during:** task 1 (R9), while running `--alloc` to get per-stage memory
-**Applied?** NO — modifies a tracked file, so per tonight's rules it waits for you.
+**Applied?** **YES — applied 2026-09-12 in `f3a0337`** to `scripts/timing_table.py`.
+The broader question (reconfigure stdout to UTF-8 once at entry, fixing every
+script rather than two call sites) is deliberately DEFERRED and still open.
+Kept as the rationale record.
 
 ## What it does
 
