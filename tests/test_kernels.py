@@ -472,3 +472,56 @@ def test_the_mean_is_a_mirror_image_across_zero(wz_sum, expected):
         np.zeros(1, np.uint8),
     )
     assert int(agg.mean_height_cm()[0]) == expected
+
+
+# --- the port's overflow bound, asserted rather than reasoned ---------------
+# `docs/gpu-lane/03-CUDA-PORT-PLAN.md` §2 warns that int32 saturation is a real
+# failure and a silent one, and §9 asks for the bound to live in code. §3 of
+# `docs/gpu-lane/05-FLOAT-AUDIT.md` has the measured version of what follows.
+
+
+def test_the_weight_ceiling_is_never_reachable():
+    """`WEIGHT_MAX` is a clip, not a value the physics can produce.
+
+    This matters because the accumulator widths in `kernels.py` are justified
+    with "w_q up to 2^20", which is the ceiling. Reasoning from the ceiling
+    says int32 `w_sum` overflows at 2048 returns in one cell; reasoning from
+    what `measurement_variance_cm2` can actually return says 2.5 million. The
+    difference is the whole safety margin, so pin the real bound.
+    """
+    from vrgrid.gpu.kernels import measurement_variance_cm2
+
+    # cos_incidence = 1.0 is the best case: the function divides by cos^2, so
+    # any real grazing angle only makes variance larger and the weight smaller.
+    r = np.geomspace(0.05, 120.0, 200_000)
+    w = quantise_weight(measurement_variance_cm2(r))
+
+    assert w.max() < WEIGHT_MAX // 1000, (
+        f"achievable weight {w.max()} is within 1000x of the WEIGHT_MAX clip "
+        f"{WEIGHT_MAX}; the width justification in kernels.py assumes it is not"
+    )
+    # The variance floor sits in the near field, where the 1/r^2 range term and
+    # the r^2 angular term cross. Guard the value, not just the ratio.
+    assert 500 <= int(w.max()) <= 2000
+
+
+def test_a_whole_frame_in_one_cell_does_not_overflow_int32():
+    """The adversarial bound, not the observed one.
+
+    Sequence 08 peaks at 123 returns in a cell, but the bound that has to hold
+    is every return of a frame landing in one cell -- that is the case a
+    silent wrap would be found in the field rather than here.
+    """
+    from vrgrid.gpu.kernels import measurement_variance_cm2
+
+    frame_returns = 130_000          # seq 08 runs ~120k; round up
+    max_w = int(quantise_weight(measurement_variance_cm2(
+        np.geomspace(0.05, 120.0, 200_000))).max())
+    max_abs_z_cm = 800               # the vertical band is 8 m
+
+    assert frame_returns * max_w < np.iinfo(np.int32).max, (
+        "w_sum can wrap int32; the atomic path stores it as int32"
+    )
+    # wz_sum is int64 precisely because this product does NOT fit int32.
+    assert frame_returns * max_w * max_abs_z_cm > np.iinfo(np.int32).max
+    assert frame_returns * max_w * max_abs_z_cm < np.iinfo(np.int64).max
