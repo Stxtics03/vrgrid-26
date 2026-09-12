@@ -22,8 +22,8 @@ SEQ 08, against the paper's 73.3% (`scripts/frnet_eval.py --frames 200`).
   frames and an IoU of 0.0%, so it is PRESENT and therefore counted. The
   committed `frnet_eval.py` prints 65.2%, and the untouched loop path and
   `--fast-scatter` agree at 90.3% / 65.2% / 61.1%.
-  69.8% is still carried by `docs/handover-2026-09-02.md:23` and `:169`,
-  `docs/demo-runbook.md:229` and `docs/perception-dashboard-summary.md:150`.
+  The handover, the runbook and the dashboard summary carried 69.8% until
+  2026-09-12; all are now corrected.
 
 ⚑ 98.3% IS NOT THE HEADLINE. It is a single-frame port sanity check on seq 00
   frame 43, and it is not comparable to a 200-frame mIoU. Pairing it with one

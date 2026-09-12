@@ -30,7 +30,7 @@ both ways.
   DIFFERENT KIND of claim than bit-identity: verify() gates `scatter_max` at
   exactly zero and `scatter_mean` at a stated ulp bound, and the substitution
   is then proven where it actually matters by re-deriving the reported 90.3%
-  point accuracy / 69.8% mIoU through `frnet_eval.py --fast-scatter`.
+  point accuracy / 65.2% mIoU through `frnet_eval.py --fast-scatter`.
 
 ⚑ THIS FILE DOES NOT EDIT JP'S PORT. `src/perception/frnet/` is a deliberately
   frozen reference port (`extend-exclude` in pyproject.toml) and is his to
@@ -156,7 +156,7 @@ def verify_equivalence(n: int = 20000, slots: int = 4000, channels: int = 64,
     because the LOOP side has to run too and the loop is the whole problem: at
     full size this check would itself take ~40 s per reduction. The reduction is
     shape-independent, and `frnet_eval.py --fast-scatter` re-checks the result
-    at full size where it counts -- as the reported 90.3% / 69.8%.
+    at full size where it counts -- as the reported 90.3% / 65.2%.
     """
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
     g = torch.Generator(device="cpu").manual_seed(seed)

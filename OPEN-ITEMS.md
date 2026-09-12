@@ -21,7 +21,7 @@ something external or someone else.
 | **D5** | **`alpha_m2` — raise it or leave it at 0.** | Not a calibration task: 0 is the only value consistent with sih-math §5.3 and the §5.4 unit test, so raising it means restating both in the same commit. | `reports/r11-what-this-does-not-do.md` §4 |
 | **D6** | **`kappa` 1/16 vs 1/12.** Knowingly 25% low; the stated geometry gives 1/12. | Frozen config, explicitly "the room decides". Both values pinned in tests so the choice stays visible. | `configs/thresholds.yaml:133` |
 | **D7** | **CARLA groundwork — scope.** | **Zero existing work** in this repo or any sibling folder, and no scope has been supplied across two sessions. Starting a simulator integration from a guess is the wrong move; this needs a paragraph from you on intended scope. | `MORNING-SUMMARY.md` §3 |
-| **D8** | **One agreed reference host + one agreed command for latency.** | Every latency disagreement in the project reduces to this. Not a measurement problem. | `reports/latency-gap-investigation.md` |
+| **D8** | **One agreed reference host + one agreed command for latency.** | Every latency disagreement in the project reduces to this. Not a measurement problem. **Now concrete:** since the vrgrid-26 merge the tree states *two* honest end-to-end figures — `README.md` 89.18/100.43 (Shrestha's host) and `handover:20` 108.65/127.23 (this host). Same quantity, different machines; one is 0.43 ms over budget and the other 27 ms over. Needs JP + Shrestha together. | `docs/handover-2026-09-02.md` latency note; `reports/latency-gap-investigation.md` |
 
 ---
 
@@ -95,10 +95,14 @@ this list.
 
 ## 6. Housekeeping state
 
-- **Branch:** `main`, **16 commits ahead of `origin/main`**, nothing pushed, per
-  standing instruction. Working tree clean.
-- **`vrgrid-26`:** untouched, not checked, not created. You are handling it with
-  Shrestha directly.
+- **Branch:** `main`. **vrgrid-26 has been merged in** (see below); nothing
+  pushed anywhere, per standing instruction.
+- **`vrgrid-26`:** remote `vrgrid26` added and fetched on JP's explicit
+  instruction, superseding the earlier "do not check" rule. `vrgrid26/main`
+  merged into local `main` as a true merge (**not** a rebase — both sides had
+  independent commits worth keeping, and rebasing would have rewritten
+  already-pushed history). Shared base `5e0ebf3`, their 5 commits against our
+  17. Four conflicts, all resolved by reading both sides. **Not pushed.**
 - **`src/perception/frnet/`:** frozen, untouched.
 - **`src/perception/ground.py`:** untouched — D1 is paused pending your design
   call, not attempted.
