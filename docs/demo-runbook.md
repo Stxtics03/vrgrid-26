@@ -226,7 +226,8 @@ be regenerated. Full diagnosis in `docs/known-limitations.md` §2b.
 
 **Semantics come from the `.label` files, not from a network.** Nothing is
 retrained and no inference runs for labels. FRNet is reported alongside the map
-(90.3 % point accuracy, 69.8 % mIoU) and never swapped into it, so the mapping
+(90.3 % point accuracy, 65.2 % mIoU, 200 frames of seq 08) and never swapped
+into it, so the mapping
 contribution is evaluated independently of segmentation quality. Disclose that
 plainly — it is a strength, not an admission.
 
