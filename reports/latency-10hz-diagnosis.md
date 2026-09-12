@@ -2,6 +2,22 @@
 
 *2026-09-12. No fix attempted, as instructed. Diagnosis only.*
 
+> **[!] SUPERSEDED 2026-09-12 by `reports/latency-gap-investigation.md`.**
+> Kept for the record; do not quote from it without checking the newer report.
+>
+> What this document got RIGHT and the newer one confirms: 80.78 / 97.72 is not
+> a whole-frame seq-08 number, and it is the mapping back half on a synthetic
+> sweep.
+>
+> What it got WRONG: the reasoning that the figure was measured with
+> `--no-patchworkpp`. Shrestha's run has `ground` at 12.41 ms -- the geometric
+> segmenter -- so Patchwork++ was active, and the figure reproduces to 1.1% as
+> `timing_table.py --cells 910000` with no fallback involved. That inference is
+> withdrawn.
+>
+> Also superseded: the claim that the figure cannot be reproduced under any
+> configuration. It reproduces.
+
 ---
 
 ## Summary

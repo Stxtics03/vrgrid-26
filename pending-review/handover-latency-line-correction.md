@@ -1,7 +1,10 @@
 # pending-review: corrected latency line for `docs/handover-2026-09-02.md`
 
 **File it would touch:** `docs/handover-2026-09-02.md:20`
-**Applied?** NO — you place it yourself.
+**Applied?** **YES — applied 2026-09-12.** The full version went into
+`docs/handover-2026-09-02.md`: the table row, a latency note beneath the
+table, and a new "10 Hz" entry in *Not proven, and must not be claimed*.
+This file is kept as the rationale record.
 **Measurement:** `reports/latency-gap-investigation.md`
 **Written:** 2026-09-12, against `main` @ `fac61c2`.
 
@@ -94,23 +97,24 @@ which is which.
 
 ## Note on scope
 
-I have deliberately **not** edited `docs/handover-2026-09-02.md`. Retiring a
-headline number is the same class of change as the mIoU correction and wants the
-same treatment: fix the line, then fix every other file quoting it **in the same
-pass**, so no new contradiction is created.
+**Update 2026-09-12: the whole pass is now done.** Retiring a headline number is
+the same class of change as the mIoU correction and wanted the same treatment —
+fix the line, then fix every other file quoting it **in the same pass**, so no
+new contradiction is created. That is what was done; the table below records the
+outcome per file rather than the plan.
 
 **Seven files quote `80.78`.** (An earlier draft of this note said two — that was
 wrong; here is the grep.)
 
 | file | what it says | needs |
 |---|---|---|
-| `docs/handover-2026-09-02.md:20` | the source claim | **the fix above** |
-| `reports/r9-per-stage-latency-and-memory.md:83,92,100` | quotes the claim, then infers it was measured with `--no-patchworkpp` | **correction — that inference is withdrawn** (see below) |
-| `reports/latency-10hz-diagnosis.md` | my earlier diagnosis | **mark superseded** by `latency-gap-investigation.md` |
-| `MORNING-SUMMARY.md:45,272,298` | quotes it as the open question | point at the new report |
+| `docs/handover-2026-09-02.md:20` | the source claim | **DONE** — row + latency note + new *Not proven* entry |
+| `reports/r9-per-stage-latency-and-memory.md:83,92,100` | quotes the claim, then infers it was measured with `--no-patchworkpp` | **DONE** — inference marked WITHDRAWN in place (`23648e9`) |
+| `reports/latency-10hz-diagnosis.md` | my earlier diagnosis | **DONE** — SUPERSEDED banner, naming what it got right and wrong |
+| `MORNING-SUMMARY.md:45,272,298` | quotes it as the open question | **DONE** — marked resolved, pointed at the new report |
 | `reports/latency-gap-investigation.md` | the archaeology | correct as-is |
 | `pending-review/handover-latency-line-correction.md` | this file | — |
-| `docs/research-log.md:456` | Shrestha's own note, which already says the figure is not comparable | **leave alone — his file, and he is right**; but see the tension below |
+| `docs/research-log.md:456` | Shrestha's own note, which already says the figure is not comparable | **left alone deliberately** — his file, and he is right; see the tension below |
 
 ### [!] `r9-per-stage-latency-and-memory.md:100` contains a withdrawn inference
 

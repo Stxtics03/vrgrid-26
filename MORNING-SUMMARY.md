@@ -41,7 +41,11 @@ they reference things that do not exist in this repository. Details in
 > `reports/latency-10hz-diagnosis.md`. Left in place as a record of what I
 > thought overnight, not as a finding.
 
-`handover-2026-09-02.md:23` lists, under *"measured on real data and holding"*,
+> **Resolved 2026-09-12.** That line has since been corrected in the handover
+> (row, latency note, and a new *Not proven* entry for 10 Hz). Full
+> reconstruction: `reports/latency-gap-investigation.md`. Kept below as written.
+
+`handover-2026-09-02.md:20` listed, under *"measured on real data and holding"*,
 frame p50 **80.78** / p99 **97.72**, "meets 10 Hz", from `timing_table.py --seq 08`.
 Same script, same sequence, tonight:
 
@@ -250,6 +254,12 @@ Nothing I added can affect the suite: every commit tonight is a new `.md` or
 
 `ruff`: 1 error, the pre-existing `tests/test_metrics.py:472` E741. Tests green.
 
+### ✓ DONE 2026-09-12 (was: CONFIRMED FOLLOW-UP — five files quote 69.8%)
+
+**Resolved in `c632027`.** Four files corrected to 65.2%, each now carrying the
+recipe (200 frames of seq 08) rather than a bare percentage.
+`research-log.md:402` was **NOT** a defect after all — see the note below.
+
 ### ⚑ CONFIRMED FOLLOW-UP — five files still quote 69.8%
 
 Not a maybe. Each needs the same correction (÷14 → ÷15; `other-ground` has a
@@ -262,8 +272,15 @@ real computed 0.0% IoU over 150 GT points, not insufficient data, so it counts):
 | `docs/perception-dashboard-summary.md` | **150** ← JP's lane |
 | `docs/research-log.md` | **402** |
 
-`research-log.md:402` is the odd one — the *same document* proves 69.8% wrong at
-line 430 and still quotes it at 402. Not touched tonight, by instruction.
+~~`research-log.md:402` is the odd one — the *same document* proves 69.8% wrong
+at line 430 and still quotes it at 402.~~
+
+**Withdrawn 2026-09-12: 402 is not a contradiction.** It says `frnet_eval.py` is
+"the script behind the reported 90.3% / 69.8%", which was **accurate when
+written** — that was the reported figure at the time, and the same document
+corrects it in a later dated entry. Editing a past entry of another dev's
+research log to match a later finding would falsify the log. Left alone
+deliberately; nothing is owed here.
 
 ## New — the 10 Hz diagnosis (`reports/latency-10hz-diagnosis.md`)
 
@@ -277,7 +294,8 @@ So the handover's label is wrong in **both** halves: it is not the frame, and it
 is not `--seq 08`. The correct whole-frame number exists in the same entry —
 **p50 89.18 / p99 100.43, max 109.28, on real seq 08, quiet machine** — and
 **misses 10 Hz at p99 by 0.43 ms**. It was never propagated to the handover,
-which still reads "meets 10 Hz" in its *proven* table.
+which still read "meets 10 Hz" in its *proven* table.
+**(Corrected 2026-09-12 — the handover now states the measured figure, and 10 Hz has moved to *Not proven*.)**
 
 ### On the fallback banner you asked me to look for
 
