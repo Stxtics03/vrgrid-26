@@ -7,6 +7,10 @@ name: ci
 on:
   push:
   pull_request:
+  # Manual trigger, so a run can be started without inventing a commit --
+  # needed the first time Actions is switched on for a repository, and for
+  # re-running the suite against an unchanged tree.
+  workflow_dispatch:
 
 jobs:
   test:
