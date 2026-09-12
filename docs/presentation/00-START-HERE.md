@@ -22,6 +22,7 @@ is pushed. Read this file first; it is the map to the other five.*
 | **`08-JP-BRIEF.md`** | JP's scope, lines, questions and tonight's checklist. | JP |
 | **`09-GPU-WHAT-TO-SAY.md`** | Every GPU claim: intended vs. what to say. Speakable. | Whoever presents slide 3 |
 | **`10-DL-WHAT-TO-SAY.md`** | Same, for the segmentation model. Mostly material you aren't using. | JP |
+| **`11-DLSS-DUALITY.md`** | The DLSS analogy, with the six claims its source PDF could not support removed. | Whoever pitches the framing |
 
 ---
 
