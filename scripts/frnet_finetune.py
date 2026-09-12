@@ -25,6 +25,13 @@ can actually resume.
   CLAUDE.md's "don't retrain anything" governs that pipeline; this is the
   separately-reported DL half of the problem statement.
 
+⚑ A RESUMED RUN MUST NOT REPLAY THE FIRST LEG'S FRAMES. Seeding one global
+  stream from `--seed` rewinds the frame picker to its start, so `--resume`
+  for 4,000 more steps drew the SAME 4,000 frames of the 19,130 available --
+  a second epoch over one fixed sample, which no number the run prints can
+  distinguish from more training. The stream is keyed to `(seed, step0)` by
+  `frame_stream`; see its docstring and `tests/test_frnet_finetune.py`.
+
 ⚑ FREEZING WEIGHTS IS NOT FREEZING A MODULE. `model.train()` puts every
   BatchNorm in the network into training mode, so a "frozen" backbone still
   drifts its running mean and variance on every forward pass -- the weights
@@ -160,6 +167,27 @@ def freeze(model: FRNet, scope: str, freeze_bn: bool) -> list[nn.Module]:
     return frozen_modules
 
 
+def frame_stream(seed: int, step0: int) -> random.Random:
+    """The frame-picking RNG, keyed to WHERE THE RUN STARTS rather than to the seed alone.
+
+    ⚑ A CONTINUATION MUST NOT REPLAY THE BATCHES THE FIRST RUN ALREADY SAW.
+      Seeding one global stream from `--seed` and then resuming rewinds it to
+      its start: `--resume` from a step-4,000 checkpoint for 4,000 more steps
+      draws the SAME 4,000 frames again, out of the 19,130 available. That
+      reads on the log as more training and is a second epoch over one fixed
+      sample -- the run memorises those frames and the held-out score it is
+      judged by cannot see the difference. Keying the stream to `(seed, step0)`
+      makes a continuation draw frames the first leg did not, while keeping it
+      reproducible: the same checkpoint continued twice is the same run, and
+      continuations of DIFFERENT checkpoints diverge.
+
+    Returns its own `random.Random` rather than seeding the global module, so
+    the stream a run trains on cannot be perturbed by any other caller of
+    `random`, and so this is testable without running a fine-tune.
+    """
+    return random.Random(seed * 1_000_003 + step0)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -180,7 +208,9 @@ def main() -> int:
                     help="checkpoint to start from -- pass a tuned one to CONTINUE it")
     ap.add_argument("--resume", action="store_true",
                     help="also restore optimiser state and step count from --init, "
-                         "which only works if --init was written by this script")
+                         "which only works if --init was written by this script. The "
+                         "frame stream advances with the step count, so the "
+                         "continuation trains on frames the first leg did not")
     ap.add_argument("--out", default="checkpoints/frnet-finetuned.pth")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--log-every", type=int, default=25)
@@ -221,7 +251,9 @@ def main() -> int:
     assert args.holdout not in train_seqs, (
         f"sequence {args.holdout} is scored by frnet_eval.py and must never be trained on")
 
-    random.seed(args.seed)
+    # The frame-picking stream is NOT seeded here: it is built from the seed and
+    # the resumed step count once that is known, by `frame_stream`. See its
+    # docstring -- seeding it here is what makes a continuation replay itself.
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
@@ -258,6 +290,10 @@ def main() -> int:
         step0 = int(blob.get("step", 0))
         print(f"resumed optimiser state at step {step0}")
 
+    #: Built here and not at seeding time because it depends on step0: a resumed
+    #: run must draw frames the earlier leg did not. See `frame_stream`.
+    rng = frame_stream(args.seed, step0)
+
     print(f"\ntraining {args.steps} steps, batch {args.batch}, lr {args.lr}\n")
     model.train()
     for m in frozen_modules:          # see the BatchNorm note in the docstring
@@ -267,7 +303,7 @@ def main() -> int:
     first = last = None
     t0 = time.perf_counter()
     for step in range(step0, step0 + args.steps):
-        picks = [frames[random.randrange(len(frames))] for _ in range(args.batch)]
+        picks = [frames[rng.randrange(len(frames))] for _ in range(args.batch)]
         batch = [load_frame(seq, i, device) for seq, i in picks]
         points = [model.range_interpolation(x) for x, _ in batch]
         n_real = [y.shape[0] for _, y in batch]

@@ -20,17 +20,27 @@ for a 600-step fine-tune and ~35 minutes for `frnet_eval.py --frames 200`.
 magnitude faster at these shapes, matching the loop's empty-slot convention
 both ways.
 
-⚑ "BIT-IDENTICAL" WAS A CPU RESULT AND DOES NOT SURVIVE THE MOVE TO CUDA. The
-  3 Sep log recorded max abs diff 0.000e+00 for both reductions, measured on
-  CPU. On CUDA `scatter_max` is still bit-identical -- max is order-independent
-  -- but `scatter_mean` differs by up to 2 float32 ulp (2.384e-07 absolute) on
-  40% of slots, because the native kernel sums a slot's rows in a different
-  order than `src[mask].mean(dim=0)` does and float addition is not
-  associative. That is float32 rounding, not a different answer, and it is a
-  DIFFERENT KIND of claim than bit-identity: verify() gates `scatter_max` at
-  exactly zero and `scatter_mean` at a stated ulp bound, and the substitution
-  is then proven where it actually matters by re-deriving the reported 90.3%
-  point accuracy / 69.8% mIoU through `frnet_eval.py --fast-scatter`.
+⚑ "BIT-IDENTICAL" IS TRUE OF scatter_max AND NOT OF scatter_mean, ON EITHER
+  DEVICE. The 3 Sep log recorded max abs diff 0.000e+00 for both reductions,
+  measured on CPU at one shape; that zero was luck. `scatter_max` really is
+  exact everywhere -- max is order-independent, so no summation order can move
+  it. `scatter_mean` is not, on CPU or CUDA, because the native kernel sums a
+  slot's rows in a different order than `src[mask].mean(dim=0)` does and float
+  addition is not associative. Measured on CPU:
+
+      n=800    slots=200    ch=8    1.192e-07   1 ulp
+      n=20000  slots=4000   ch=64   0.000e+00   0 ulp   <- the shape 3 Sep used
+      n=20000  slots=4000   ch=8    2.384e-07   2 ulp
+      n=124000 slots=25000  ch=16   3.576e-07   3 ulp
+
+  The error grows with rows-per-slot, which is what sets how many additions
+  accumulate. So the honest claim is not bit-identity but agreement to within
+  a few float32 ulp, and verify() gates `scatter_max` at exactly zero and
+  `scatter_mean` at a stated ulp bound. The substitution is then proven where
+  it actually matters, by re-deriving the reported figures through
+  `frnet_eval.py --fast-scatter`: 90.3% point accuracy, 65.2% mIoU and 61.1%
+  drivable mIoU come out equal on both paths, with three of fifteen per-class
+  IoUs moving by 0.1 pp.
 
 ⚑ THIS FILE DOES NOT EDIT JP'S PORT. `src/perception/frnet/` is a deliberately
   frozen reference port (`extend-exclude` in pyproject.toml) and is his to
@@ -60,8 +70,8 @@ both ways.
   `verify()` checks it. The risk was ties: `amax` splits gradient evenly among
   tied maxima where `Tensor.max(dim=0)` hands all of it to the first, and ties
   are reachable here because ReLU emits exact zeros. Measured, the max backward
-  is exact to 0.000e+00 and the mean backward carries the same 2 ulp as its
-  forward. Checked rather than assumed away, and re-checked on every enable().
+  is exact and the mean backward carries the same few ulp as its forward.
+  Checked rather than assumed away, and re-checked on every enable().
 """
 import sys
 import time
@@ -176,12 +186,15 @@ def verify_equivalence(n: int = 20000, slots: int = 4000, channels: int = 64,
 
     if argmax is not None:
         raise AssertionError("shim must return None for argmax; see header")
-    #: `scatter_max` is order-independent and must match exactly on any device.
-    #: `scatter_mean` sums each slot in the native kernel's order, so on CUDA it
-    #: lands within float32 rounding of the loop rather than on top of it. The
-    #: bound is stated in ulp so it cannot quietly widen into a real difference.
+    #: `scatter_max` is order-independent and must match exactly on any device
+    #: and at any shape. `scatter_mean` sums each slot in the native kernel's
+    #: order, so it lands within float32 rounding of the loop rather than on top
+    #: of it, and the error grows with rows-per-slot -- 3 ulp measured at
+    #: 124,000 rows into 25,000 slots. 8 ulp leaves headroom above that while
+    #: staying six orders of magnitude below any real defect: a wrong reduction
+    #: misses by ~1e7 ulp, not by 4.
     ULP = torch.finfo(torch.float32).eps
-    TOLERANCE = {"scatter_max": 0.0, "scatter_mean": 4 * ULP}
+    TOLERANCE = {"scatter_max": 0.0, "scatter_mean": 8 * ULP}
     for name, ref, new in (("scatter_max", ref_max, new_max),
                            ("scatter_mean", ref_mean, new_mean)):
         finite = torch.isfinite(ref)
