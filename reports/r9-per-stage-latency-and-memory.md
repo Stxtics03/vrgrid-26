@@ -95,16 +95,39 @@ Same script, same sequence, tonight:
 
 *Established.* The cold/warm gap is entirely `load` (25.23 → 1.29 ms p50) — the
 OS page cache, not the pipeline. And the Patchwork++ gap is entirely `ground`
-(21.09 → 0.42 ms p50): **the logged figure is consistent with having been
-measured with `--no-patchworkpp`**, i.e. on the semantic-class ground fallback
-rather than the geometric segmenter. 87.95/106.20 is close to 80.78/97.72;
-106.74/132.22 is not.
+(21.09 → 0.42 ms p50).
 
-*Not established.* I cannot reproduce 80.78/97.72 exactly under any flag
-combination, and I cannot rule out that the original run was on a quieter
-machine or an earlier code state — `main` has taken PRs #31–#37 since, and this
+> **[!] WITHDRAWN 2026-09-12 — the inference that followed from this was wrong.**
+> This paragraph originally continued: *"the logged figure is consistent with
+> having been measured with `--no-patchworkpp`"*, on the arithmetic that
+> 87.95/106.20 is close to 80.78/97.72. **That is not what happened.**
+>
+> - Shrestha's own run has `ground` at **12.41 ms** (`docs/research-log.md`,
+>   4 Sep), which is the geometric segmenter, not the 0.42 ms fallback.
+>   **Patchwork++ was active.**
+> - The handover figure reproduces to **1.1%** as
+>   `timing_table.py --cells 910000` — the *synthetic* path at full candidate
+>   occupancy — with no fallback involved at all.
+>
+> Numeric proximity between two figures was treated as evidence they were the
+> same measurement. It was not; they are different quantities that happen to
+> land near each other. Full reconstruction in
+> `reports/latency-gap-investigation.md`.
+
+*Not established (at the time).* I cannot reproduce 80.78/97.72 exactly under
+any flag combination, and I cannot rule out that the original run was on a
+quieter machine or an earlier code state — `main` has taken PRs #31–#37 since, and this
 machine has ~2.5 GB free RAM. **What I can say is narrower and still material:
 in every configuration measurable tonight, p99 exceeds the 100 ms budget.**
+
+> **Update 2026-09-12.** The figure *does* reproduce, to 1.1%, as
+> `timing_table.py --cells 910000` — the synthetic path at full candidate
+> occupancy, not a real seq-08 frame. Neither a quieter machine nor an earlier
+> code state was needed to explain it: `timing_table.py` is unchanged since the
+> handover commit apart from a 2-character unicode fix, and
+> `max_candidate_cells` was already `null` then. The p99 sentence above still
+> stands and has since been reproduced across every window of a 221-frame run
+> (115–147 ms). See `reports/latency-gap-investigation.md`.
 
 **Not edited.** Per tonight's rules this is logged, not fixed. It contradicts a
 claim in the handover's *proven* table and belongs in a conversation.
