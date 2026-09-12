@@ -464,12 +464,12 @@ def print_table(t, alloc, frame):
     for name, why in BLOCKED.items():
         print(f"  {name:<12}{STAGE_OWNER[name]:<11}{why}")
 
-    print(f"\n⚑ MEASURED is a LOWER BOUND on frame latency, not the frame total. "
+    print(f"\n[!] MEASURED is a LOWER BOUND on frame latency, not the frame total. "
           f"Six stages\n  above are unmeasured; the front end is the whole of "
           f"perception. The honest\n  sentence is \"the mapping back end costs "
           f"{m['p99_ms']:.1f} ms at p99\", never \"we run at {h['fps_p99']:.0f} FPS\".")
     if wide and alloc.get("bin", 0) > 1e6:
-        print(f"\n⚑ `bin` allocates {alloc['bin'] / 1e6:.2f} MB per frame. It is "
+        print(f"\n[!] `bin` allocates {alloc['bin'] / 1e6:.2f} MB per frame. It is "
               f"`grid.lattice.bin_points`,\n  which is supposed to allocate "
               f"nothing -- so this is a regression, not a\n  known gap. Check "
               f"for a `np.take` without mode=\"clip\" or a mixed-dtype ufunc.")

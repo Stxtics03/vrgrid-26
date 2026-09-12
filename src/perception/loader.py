@@ -46,6 +46,31 @@ LABELS_DIR = DATA_ROOT / "sequences"
 MOVING_LABEL_IDS = range(250, 260)  # verify against raw files — Hriday, hour 4
 
 
+def _data_root_hint() -> str:
+    """Why the data was not found, in the words that fix it.
+
+    The in-repo `data/` holds calib.txt and poses.txt but almost no velodyne
+    scans and NO labels, so an unset $VRGRID_DATA_ROOT does not fail at
+    import -- it falls through to the stub and dies much later inside a loader
+    call. That failure reads as "the dataset is missing" when the real cause is
+    a missing environment variable, which is a different fix. Say which it is.
+
+    Reads the module-level DATA_ROOT rather than the environment variable
+    alone, so a test that monkeypatches DATA_ROOT still reports the path the
+    call actually used.
+    """
+    if not os.environ.get("VRGRID_DATA_ROOT"):
+        return (f"\n  $VRGRID_DATA_ROOT is NOT SET, so this fell back to "
+                f"{DATA_ROOT}.\n"
+                f"  The in-repo data/ is a partial stub -- calib and poses "
+                f"only, few scans, no labels.\n"
+                f"  Set $VRGRID_DATA_ROOT to the SemanticKITTI root "
+                f"(see data/README.md).")
+    return (f"\n  $VRGRID_DATA_ROOT={os.environ['VRGRID_DATA_ROOT']} "
+            f"-> {DATA_ROOT}.\n"
+            f"  Check the sequence is downloaded there (see data/README.md).")
+
+
 def _velodyne_path(sequence: str, frame: int) -> Path:
     return VELODYNE_DIR / sequence / "velodyne" / f"{frame:06d}.bin"
 
@@ -190,7 +215,8 @@ def load_gt_poses(sequence: str) -> np.ndarray:
     """
     path = _gt_poses_path(sequence)
     if not path.exists():
-        raise FileNotFoundError(f"GT poses not found: {path}")
+        raise FileNotFoundError(f"GT poses not found: {path}"
+                                f"{_data_root_hint()}")
 
     data = np.loadtxt(path, dtype=np.float64)
     if data.ndim == 1:
@@ -247,7 +273,9 @@ def scans(sequence: str, max_frames: int | None = None, start_frame: int = 0):
     available = _available_frames(sequence)
 
     if not available:
-        raise FileNotFoundError(f"No velodyne frames found for sequence {sequence}")
+        raise FileNotFoundError(
+            f"No velodyne frames found for sequence {sequence}"
+            f"{_data_root_hint()}")
 
     if start_frame:
         available = [f for f in available if f >= start_frame]
