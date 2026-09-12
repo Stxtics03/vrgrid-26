@@ -10,6 +10,31 @@ produce those numbers on this machine. This is the reconstruction.
 
 ---
 
+## Read this first: p99 misses the budget and nothing found here fixes it
+
+**Whole-frame p99 on real seq 08 is 127-146 ms against a 100 ms budget, and no
+parameter, warm-up length, frame count or version tested moved it.** It also
+drifts **115-147 ms across windows of a single 221-frame run**, so it is not
+even a stable quantity to quote.
+
+This is the finding that decides whether a 10 Hz claim can be made at all, and
+it survives everything else in this report:
+
+- The `num_iter` tradeoff in §"Is there a real path to 10 Hz" buys p50, **not
+  p99**. A 5 ms saving in a 20 ms stage cannot close a 30 ms p99 overshoot
+  whose cause is elsewhere, and that cause was not located here.
+- Discarding 50+ warm-up frames does not help p99 (the 170-frame warm window
+  reads 130.58 ms; the best window of any length still reads 115.40 ms).
+- Pinning `pypatchworkpp` does not help: 1.4.1 is already the fastest
+  installable version.
+
+**So: p50 has a measured path inside budget; p99 does not, and the gap is
+~15-47 ms.** Everything below should be read with that in front of it. If the
+10 Hz claim is meant as a p99 claim, this report does not support it and no
+change proposed here would.
+
+---
+
 ## Confirmed
 
 ### 1. Patchwork++ is real on this machine, and it really executes
@@ -79,13 +104,56 @@ Python  3.13.9,  numpy 2.4.4
 These timings are entirely CPU-bound and the discrete GPU is irrelevant to
 them.
 
-### 5. There is no version pin on Patchwork++
+### 5. There is no version pin — and the version is NOT the explanation
 
 `pyproject.toml:25` — `perception = ["pypatchworkpp>=1.2"]`. A **floating
 lower bound**, no lockfile, no upper bound. Installed here is **1.4.1**.
-Whatever version produced the original number is unrecorded and unconstrained,
-and a 1.2-vs-1.4 difference in the segmenter is entirely possible. This is
-worth pinning regardless of how this investigation ends.
+
+**Shrestha's build cannot be pinned to, because it is not a released version.**
+Commit `1c7c24d` (2 Sep 2026) records that pip install fails at every published
+version — the sdist's `python/CMakeLists.txt` takes its out-of-tree branch and
+fetches `refs/tags/v${CMAKE_PROJECT_VERSION}.tar.gz` with the variable empty
+under scikit-build-core, so GitHub 404s on `tags/v.tar.gz`. He worked around it
+with a source build:
+
+```
+git clone --depth 1 https://github.com/url-kaist/patchwork-plusplus.git
+.venv/bin/pip install ./patchwork-plusplus/python
+```
+
+So his artifact is an **untagged git HEAD as of 2 Sep 2026, compiled locally on
+Linux**. There is no version number that identifies it.
+
+Mine is the opposite artifact, confirmed from `dist-info`: `Tag:
+cp313-cp313-win_amd64`, `INSTALLER: pip`, **no `direct_url.json`** — a
+**prebuilt PyPI wheel**, compiled by someone else for broad x86-64
+compatibility. (The Windows wheel exists, which is why pip succeeded here and
+failed for him: his platform had no wheel, so pip fell back to the broken
+sdist.)
+
+**Measured anyway, across every installable version** (throwaway venv, same
+harness, seq 08, 40 frames, 3 reps):
+
+| pinned version | ground p50 |
+|---|---|
+| **1.4.1 (installed)** | **18.58 ms** |
+| 1.4.0 | 24.37 |
+| 1.3.1 | 23.88 |
+| 1.3.0 | 23.83 |
+| 1.2.0 | 25.05 |
+
+**1.4.1 is already the fastest available wheel**, by 21-26% over every older
+one. Pinning to anything else *widens* the gap, and nothing installable comes
+near Shrestha's 12.41 ms. **Version is ruled out as the explanation.**
+
+(This sweep passed 3-column points, so RNR was inactive in all rows — which is
+why the absolute values sit ~1.1 ms below the 4-column figures elsewhere,
+matching the measured `enable_RNR` saving of 1.14 ms exactly. The comparison
+between versions is unaffected, since every row was measured identically.)
+
+**Still pin it to `==1.4.1`.** Not as a fix for the gap, but because it is the
+fastest option and it removes a free variable from every future cross-machine
+comparison.
 
 ---
 
@@ -232,14 +300,26 @@ inference, not provenance. I am not going to dress it up as a finding.
 
 ### Genuinely open
 
-1. **The ~1.7x `ground` difference between machines is unexplained.** 12.41 ms
-   there, 20-21 ms here, same code and data. Candidates: CPU (this is a
-   *laptop* i7-13620H under sustained load, and the p99 spread in the table
-   above is consistent with thermal behaviour), a different `pypatchworkpp`
-   build given the unpinned `>=1.2`, or Windows vs Linux. **Untestable from
-   this machine**, and I am neither ruling it in nor out. If nothing else
-   explains a residual gap, this is the live candidate — and the missing
-   version pin (§5) is the part of it that is actually fixable.
+1. **The ~1.7x `ground` difference between machines is narrowed but not
+   closed.** 12.41 ms there, 18.6-21 ms here, same code and data.
+
+   **Ruled out:** the library version (§5 — 1.4.1 is already the fastest
+   installable, and every older version is *slower*). Pinning does not close or
+   narrow the gap; best case here is still **1.5x** his number.
+
+   **The live candidate is now build provenance, not version.** His is a
+   locally compiled source build (Linux, whatever flags that repo's CMakeLists
+   sets, `-march`-tuned to his CPU); mine is a generic prebuilt wheel targeting
+   broad x86-64 compatibility. That difference alone plausibly accounts for
+   1.5x on a tight numeric inner loop, and it is **untestable on this machine**:
+   a source build needs a C++ toolchain and there is none here (no MSVC, no
+   cmake, no ninja — it would mean a multi-GB Visual Studio Build Tools
+   install). Remaining co-factors, also untestable from here: Linux vs Windows,
+   and his CPU vs this *laptop* i7-13620H under sustained load.
+
+   I am neither ruling hardware in nor out. What changed is that the cheap
+   explanation (version drift) has been eliminated by measurement rather than
+   left as a maybe.
 2. **p99 is duration-dependent and therefore a weak comparator.** It ranges
    115-147 across windows of the same run. Any p99 quoted without a frame
    count and a host is not a checkable claim — which is exactly the situation

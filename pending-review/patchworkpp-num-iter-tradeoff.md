@@ -1,11 +1,35 @@
-# pending-review: a measured path to 10 Hz p50 with real Patchwork++
+# pending-review: the `num_iter` latency tradeoff — MEASURED AND REJECTED
 
-**Status:** proposal. **Nothing applied.** No change was made to
-`src/perception/ground.py`.
+**Status:** proposal, **withdrawn on the evidence**. **Nothing applied.** No
+change was made to `src/perception/ground.py`.
+**Outcome:** do not apply. It buys 5.42 ms of p50, costs 19-54% of ring-0
+elevation RMSE concentrated on slopes (§5a), and does not fix p99 (§0).
 **Code it would touch:** `src/perception/ground.py` (`_get_estimator`) and
 `configs/thresholds.yaml` (**frozen** — needs Shrestha).
 **Measurement:** `reports/latency-gap-investigation.md`
 **Written:** 2026-09-12, against `main` @ `675d24b`.
+
+---
+
+## 0. Read this first: p99 misses the budget and this proposal does not move it
+
+**p99 stays out of budget, and nothing in this proposal moves it.** Whole-frame
+p99 on seq 08 is **127-146 ms** over full runs, and ranges **115-147 ms** across
+windows within a single 221-frame run — against a 100 ms budget. **No parameter
+tested changed it:** not `num_iter`, not the optional stages, not `max_range`,
+not warm-up length, not the library version.
+
+A 5.42 ms saving in a 20 ms stage cannot close a 30 ms p99 overshoot whose
+cause is elsewhere and was not located.
+
+So the honest framing of this proposal is: **it buys p50, at a cost in ground
+accuracy, and leaves the p99 problem untouched.** If the 10 Hz target is a p99
+target, do not ship this expecting to hit it, and do not let the p50 number
+stand in for the claim anywhere it gets quoted.
+
+**And the accuracy cost turned out to be real — see §5a. On the measurement now
+available I recommend AGAINST applying this.** The §4 recommendation below is
+retained as written for the record, but §5a supersedes it.
 
 ---
 
@@ -84,7 +108,7 @@ both columns. Do not touch it; there is nothing to win.
 
 ## 5. [!] What this does NOT fix
 
-**p99 stays out of budget.** 120-130 ms across every window measured, and
+**p99 stays out of budget.** 115-147 ms across every window measured, and
 **no parameter tested moved it**. A 5 ms shift in a 20 ms stage cannot fix a
 30 ms p99 overshoot whose cause is elsewhere. If the 10 Hz claim is meant to
 be a p99 claim, this proposal does not deliver it and should not be presented
@@ -94,6 +118,42 @@ as if it does.
 verdict. Nobody has checked *which* points: if they cluster on curbs, slopes,
 or the far field, a 0.72% aggregate could still move a hazard-relevant number.
 See §7.
+
+## 5a. MEASURED: the accuracy cost, and it rejects the proposal
+
+The 0.72% was measured properly after this document was first written. Full
+result in **`reports/numiter-tradeoff-accuracy-cost.md`**; the decisive part:
+
+| seq | ring-0 RMSE shipped | proposed | relative |
+|---|---|---|---|
+| 07 | 1.77 cm | **2.74 cm** | **+54%** |
+| 08 | 1.17 cm | **1.39 cm** | +19% |
+| 00 | 2.74 cm | **3.73 cm** | **+36%** |
+
+(Baseline gate passed first: shipped reproduces the published 1.78 / 1.17 /
+2.74.)
+
+And the flips are **not** spread evenly. Flip rate by local surface slope:
+
+| local slope | 07 | 08 | 00 |
+|---|---|---|---|
+| 0-2% | 0.89% | 0.59% | 0.80% |
+| 10-20% | **3.57%** | **2.65%** | **1.82%** |
+| >20% | **3.39%** | **2.57%** | **1.85%** |
+
+**Monotone on all three sequences, 2.3-4.5× from flattest to steepest.** Exactly
+what truncating a plane fit should do, and the worst place to do it: slope is
+itself a traversability input (`traversability` bit 1), so the error feeds the
+hazard decision that slope drives. `terrain` carries the highest within-class
+flip rate (3.6-3.8% on 07 and 00) and `vegetation` is ~half of all flips on 08
+and 00.
+
+**Curbs are clean** — flip rate at the road/sidewalk boundary is *lower* than
+away from it on all three sequences (0.17-1.06% vs 0.74-1.11%). That hypothesis
+is ruled out; slope replaces it.
+
+**Conclusion: reject.** 5.42 ms is not worth 19-54% of ring-0 accuracy
+concentrated on slopes, and per §0 it does not deliver the 10 Hz claim anyway.
 
 ## 6. Where the value would live
 
@@ -113,7 +173,11 @@ Reading them in `_get_estimator` is a 3-line change. **Do not** apply it
 before the config keys exist, or the value ends up hardcoded and the next
 person has no idea it was a deliberate tradeoff.
 
-## 7. Before this ships, one thing must be checked
+## 7. Before this ships, one thing must be checked — DONE, and it failed
+
+**This section is now answered by §5a: the check was run and the proposal did
+not survive it.** Kept below as written, because the list is the right list for
+any future change to the ground mask.
 
 **Re-run the accuracy numbers that depend on the ground mask**, not just the
 timing. At minimum:
