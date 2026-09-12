@@ -525,3 +525,73 @@ def test_a_whole_frame_in_one_cell_does_not_overflow_int32():
     # wz_sum is int64 precisely because this product does NOT fit int32.
     assert frame_returns * max_w * max_abs_z_cm > np.iinfo(np.int32).max
     assert frame_returns * max_w * max_abs_z_cm < np.iinfo(np.int64).max
+
+
+# --- scatter_sorted on device -----------------------------------------------
+# The port's contract is not "it runs on a GPU", it is "it returns the same
+# bytes the CPU returns". These assert that, because a device path that agrees
+# to within a rounding error would quietly break the CI-blocking determinism
+# gate and the map hash with it.
+
+
+def _cupy_or_skip():
+    """See tests/test_gpu_compat.py for why all three states are handled."""
+    try:
+        import cupy as cp
+    except ImportError as exc:
+        pytest.skip(f"cupy unavailable: {exc}")
+    try:
+        cp.zeros(1) + 1
+    except Exception as exc:                                      # noqa: BLE001
+        pytest.skip(f"cupy present but no usable device: {type(exc).__name__}")
+    return cp
+
+
+_AGG_COLUMNS = ("cells", "wz_sum", "w_sum", "n", "ceiling_cm", "refl_sum", "class_id")
+
+
+def _random_frame(n=40_000, cells=12_000, seed=42):
+    rng = np.random.default_rng(seed)
+    return (rng.integers(-1, cells, n).astype(np.int64),      # -1 exercises the drop path
+            rng.integers(-800, 800, n).astype(np.int16),
+            rng.integers(1, 848, n).astype(np.int32),         # 848 is the achievable max weight
+            rng.integers(0, 255, n).astype(np.int32),
+            rng.integers(0, 19, n).astype(np.uint8),
+            rng.random(n) < 0.55), n, cells
+
+
+def test_scatter_sorted_on_device_is_bit_identical_to_cpu():
+    cp = _cupy_or_skip()
+    frame, n, cells = _random_frame()
+
+    cpu = scatter_sorted(*frame, scratch=new_sorted_scratch(n, cells, xp=np))
+    dev = [cp.asarray(a) for a in frame]
+    gpu = scatter_sorted(*dev, scratch=new_sorted_scratch(n, cells, xp=cp))
+
+    assert len(cpu.cells) == len(gpu.cells) > 0
+    for name in _AGG_COLUMNS:
+        a, b = getattr(cpu, name), getattr(gpu, name).get()
+        assert a.dtype == b.dtype, f"{name}: dtype drifted, {a.dtype} vs {b.dtype}"
+        assert np.array_equal(a, b), f"{name}: device result differs from CPU"
+    # The column the map actually consumes, which rounds in integers.
+    assert np.array_equal(cpu.mean_height_cm(), gpu.mean_height_cm().get())
+
+
+def test_scatter_sorted_is_reproducible_on_device():
+    """Integer reductions are order-independent, so repeated runs must agree
+    exactly however the scheduler interleaves them. This is the claim the whole
+    GPU cycle rests on, checked on the real kernel rather than a microbenchmark.
+    """
+    cp = _cupy_or_skip()
+    frame, n, cells = _random_frame(seed=7)
+    dev = [cp.asarray(a) for a in frame]
+    scratch = new_sorted_scratch(n, cells, xp=cp)
+
+    first = None
+    for run in range(10):
+        agg = scatter_sorted(*dev, scratch=scratch)
+        cp.cuda.Stream.null.synchronize()
+        got = tuple(getattr(agg, c).get().tobytes() for c in _AGG_COLUMNS)
+        if first is None:
+            first = got
+        assert got == first, f"scatter_sorted diverged on device at run {run}"
