@@ -1,8 +1,14 @@
 # The accuracy cost of the `num_iter=2` latency tradeoff
 
 **Verdict: do not apply it.** The 5.42 ms latency win costs **19-54% of ring-0
-elevation RMSE**, and the flipped ground verdicts concentrate on **sloped
-ground** — where a wrong ground verdict does the most damage. Curbs are clean.
+elevation RMSE** (and +56% at ring 1 on seq 07), and the flipped ground verdicts
+concentrate on **sloped ground** — where a wrong ground verdict does the most
+damage. **Curbs are clean.** Hazard misses move the wrong way too (8 -> 10 on
+seq 07), though on denominators far too small to be significant on their own.
+
+All three published baselines were reproduced before any delta was believed:
+ring-0 RMSE on all three sequences, and the full R7 support / non-drivable /
+miss triple on all three.
 
 **Written:** 2026-09-12, against `main` @ `fac61c2`.
 **Proposal under test:** `pending-review/patchworkpp-num-iter-tradeoff.md`
@@ -148,14 +154,143 @@ completeness, not as a finding.
 
 ---
 
+## 3a. R1: the damage is not confined to ring 0
+
+Per-ring RMSE (cm), same 40 frames and schedule. Ring 0 is gated against the
+published value on all three sequences (§1), so the ring-0 column is trustworthy;
+see the caveat below for the rest.
+
+| seq | config | ring 0 | ring 1 | ring 2 | ring 3 |
+|---|---|---|---|---|---|
+| 07 | shipped | 1.77 | 3.04 | 5.91 | 16.93 |
+| 07 | **proposed** | **2.74** | **4.75** | 5.96 | 16.58 |
+| 08 | shipped | 1.17 | 2.31 | 4.89 | 54.86 |
+| 08 | **proposed** | **1.39** | **2.46** | 4.61 | 23.09 |
+| 00 | shipped | 2.74 | 6.46 | 34.10 | 9.11 |
+| 00 | **proposed** | **3.73** | 6.62 | 34.80 | 8.98 |
+
+**Ring 1 degrades too, and on seq 07 as badly as ring 0** — 3.04 -> 4.75 cm,
+**+56%**. So this is not a ring-0-only effect; the two finest rings, which carry
+the accuracy claim, both move the wrong way on the sequence that is clean enough
+to carry it.
+
+Rings 2 and 3 are **not** evidence either way:
+
+- Ring 2 barely moves (07 +0.05, 08 −0.28, 00 +0.70) against baselines of
+  4.89-34.10 cm — noise on an already-poor number, and seq 00's ring 2 is the
+  known vegetation outlier.
+- **Ring 3's apparent 2.4× improvement on seq 08 (54.86 -> 23.09) should be
+  ignored.** Ring 3 is 100% unlabelled, and seq 08 is explicitly **not
+  reportable for anything built on world-registered accumulation** per
+  `1c7c24d` — the per-frame registration fault. A large move in the one ring
+  with no class information, on the one sequence with a known accumulation bug,
+  is not a finding.
+
+### [!] Caveat: rings 1+ do not all reproduce the published R1 values
+
+Against `reports/r1-accuracy-by-class-and-range-band.md`:
+
+| | ring 0 | ring 1 | ring 2 |
+|---|---|---|---|
+| seq 07 published / measured | 1.78 / **1.77** | 3.60 / **3.04** | 5.91 / **5.91** |
+| seq 08 published / measured | 1.17 / **1.17** | 2.31 / **2.31** | 4.89 / **4.89** |
+| seq 00 published / measured | 2.74 / **2.74** | 6.77 / **6.46** | 34.10 / **34.10** |
+
+Rings 0 and 2 reproduce **exactly** on all three sequences, and seq 08
+reproduces exactly at every ring. Ring 1 is off by −0.56 on 07 and −0.31 on 00.
+
+I do not know why, and I am not going to guess at it. The most plausible
+candidate is the **known Patchwork++ singleton determinism bug** — the scored
+population shifts slightly between replays, and ring 1 may simply be the ring
+most sensitive to that — but I have not tested it and it should not be written
+down as the cause. The practical consequence is bounded: the ring-1 *comparison*
+above is shipped-vs-proposed within one harness, so it is internally valid, but
+the ring-1 *absolute* numbers should not be quoted against the published table
+until this is resolved. **It is also a live reason to fix the determinism bug
+before any further accuracy work** — an eval harness that does not reproduce its
+own published numbers to the last digit cannot adjudicate a 0.3 cm question.
+
+## 3b. R7: hazard misses move the wrong way, but the denominators are too small to prove it
+
+**The R7 harness was reproduced exactly** before any comparison was drawn —
+support, non-drivable count and misses all match the published table on all
+three sequences:
+
+| seq | published support / non-drivable / misses | measured | |
+|---|---|---|---|
+| 07 | 1,724 / 19 / 8 | **1,724 / 19 / 8** | PASS |
+| 08 | 1,917 / 3 / 0 | **1,917 / 3 / 0** | PASS |
+| 00 | 1,914 / 38 / 4 | **1,914 / 38 / 4** | PASS |
+
+Recovering it took two corrections, both recorded in §5: the window sits
+*behind* the vehicle, and **"non-drivable" is `TRAV_SLOPE | TRAV_STEP` only** —
+equivalently `isinf(cost)`, the hard-impassable cells. `TRAV_ROUGHNESS` and
+`TRAV_CLASS` are *not* part of it. That is worth writing down; it was not
+recorded anywhere and four other plausible bit masks give four different
+answers. (One small residual: seq 07's false alarms read 74 against the
+published 71. Support, non-drivable and misses are exact, so I have not chased
+the difference, but it is not a perfect reproduction.)
+
+### Reference held FIXED at the shipped mask — the meaningful comparison
+
+| seq | map built with | non-drivable | misses | miss rate | false alarms |
+|---|---|---|---|---|---|
+| 07 | shipped | 19 | 8 | 42.11% | 74 |
+| 07 | **proposed** | 19 | **10** | **52.63%** | 77 |
+| 08 | shipped | 3 | 0 | 0.00% | 4 |
+| 08 | **proposed** | 3 | **0** | 0.00% | 4 |
+| 00 | shipped | 38 | 4 | 10.53% | 59 |
+| 00 | **proposed** | 38 | **5** | **13.16%** | 52 |
+
+**Misses increase on both sequences that have hazards to miss**, and never
+decrease. Direction is consistent with the RMSE result.
+
+### [!] But this does not carry the argument, and it must not be quoted as if it does
+
+**The denominators are 19, 3 and 38** — R7's whole point. The 95% interval for
+the shipped 8/19 is [23.1%, 63.7%], and the proposed 10/19 = 52.63% sits
+*inside* it. **This difference is not statistically significant.** Two extra
+missed cells on a denominator of 19 is not evidence, and "0 of 3" on seq 08 was
+never evidence of anything.
+
+The rejection in §4 rests on the ring-0 and ring-1 RMSE — which are large,
+unambiguous and reproduce — **not on R7.** R7 is corroborating direction only.
+
+### [!] A methodological trap worth recording
+
+Rebuilding M\* with the proposed mask as well gives a *different and flattering*
+answer on seq 07:
+
+| seq | | shipped | proposed (M\* rebuilt too) |
+|---|---|---|---|
+| 07 | non-drivable in M\* | 19 | **16** |
+| 07 | misses | 8 | **7** |
+| 00 | non-drivable in M\* | 38 | **40** |
+| 00 | misses | 4 | **10** |
+
+Seq 07's miss count *improves* (8 -> 7) — but only because **M\* itself lost
+three non-drivable cells** (19 -> 16). The degraded ground mask makes the
+reference blind to hazards, and a reference that cannot see a hazard cannot
+record a miss against it.
+
+**So a worse ground mask can look like a safer map.** Any future A/B on the
+ground mask must hold M\* fixed at the best available mask, or it will score
+its own degradation as an improvement. This is the same family of error as the
+ground-mask-less M\* that read 22.10 cm on seq 07 — the artifact you measure
+against cannot be built from the thing under test.
+
 ## 4. Recommendation
 
 **Reject the `num_iter=2` tradeoff.** Reasons, in order:
 
-1. **19-54% worse ring-0 RMSE** for 5.42 ms. On seq 07 that is 1.77 -> 2.74 cm.
+1. **19-54% worse ring-0 RMSE** for 5.42 ms. On seq 07 that is 1.77 -> 2.74 cm,
+   and ring 1 degrades with it (3.04 -> 4.75 cm, +56%).
 2. **The error concentrates on slopes** (2.3-4.5× flip rate), which is both the
    hardest terrain and a direct traversability input.
-3. **It does not fix p99 anyway** (120-147 ms against a 100 ms budget, unmoved
+3. **Hazard misses increase** on both sequences that have hazards — 8 -> 10
+   (seq 07) and 4 -> 5 (seq 00) against a fixed reference, never decreasing.
+   Not significant at these denominators (§3b), but the direction agrees.
+4. **It does not fix p99 anyway** (120-147 ms against a 100 ms budget, unmoved
    by every parameter tested), so it does not deliver the 10 Hz claim even if
    the accuracy cost were acceptable.
 
@@ -192,6 +327,23 @@ Scratch harnesses, session-local, not committed (measurement, not deliverables):
 
 - `scratchpad/numiter_accuracy.py` — ring-0 gate and comparison.
 - `scratchpad/flip_location.py` — direction, class, slope, curb, range cuts.
-- `scratchpad/numiter_r1_r7.py` — R1 per-ring and R7 hazard-miss comparison.
+- `scratchpad/numiter_r1_r7.py` — R1 per-ring table.
+- `scratchpad/numiter_r7.py` — R7 with the canonical planning window.
+- `scratchpad/dump_costmaps.py` + `find_r7_predicate.py` — dumps the costmaps
+  once so drivability predicates can be searched without a 12-minute rebuild.
 
 Requires `VRGRID_DATA_ROOT=C:/KITTI/dataset`.
+
+Two traps worth recording for whoever runs these next:
+
+- **`height_rmse_per_ring` returns centimetres and a `{ring: rmse}` dict.**
+  Multiplying by 100 gives a table that is exactly 100x out but otherwise
+  plausible; iterating the return value yields the ring *indices* (0, 1, 2, 3),
+  which looks like a clean ascending RMSE curve and is not one. Both mistakes
+  produced believable-looking tables here before the gate caught them.
+- **The planning window is not centred on the vehicle.**
+  `eval_synthetic.costmaps_for` places it at `x0 = vx - 11.0`, `y0 = vy - 5.5`,
+  44x44 — i.e. entirely *behind* the vehicle, over ground it has actually
+  driven and therefore observed — and passes `vehicle_xy_m` to
+  `costmap_from_gridmap`. Centring it instead drops support from 1,724 to 955 on
+  seq 07, because half the window is ground the map never saw.

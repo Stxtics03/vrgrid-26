@@ -95,9 +95,45 @@ which is which.
 ## Note on scope
 
 I have deliberately **not** edited `docs/handover-2026-09-02.md`. Retiring a
-headline number that five other documents may reference is the same class of
-change as the mIoU correction, and it wants the same treatment: fix the line,
-then grep for every other file quoting 80.78 or "meets 10 Hz" and fix those in
-the same pass so no new contradiction is created. Only
-`reports/latency-10hz-diagnosis.md` and
-`reports/latency-gap-investigation.md` (both mine) currently quote it.
+headline number is the same class of change as the mIoU correction and wants the
+same treatment: fix the line, then fix every other file quoting it **in the same
+pass**, so no new contradiction is created.
+
+**Seven files quote `80.78`.** (An earlier draft of this note said two — that was
+wrong; here is the grep.)
+
+| file | what it says | needs |
+|---|---|---|
+| `docs/handover-2026-09-02.md:20` | the source claim | **the fix above** |
+| `reports/r9-per-stage-latency-and-memory.md:83,92,100` | quotes the claim, then infers it was measured with `--no-patchworkpp` | **correction — that inference is withdrawn** (see below) |
+| `reports/latency-10hz-diagnosis.md` | my earlier diagnosis | **mark superseded** by `latency-gap-investigation.md` |
+| `MORNING-SUMMARY.md:45,272,298` | quotes it as the open question | point at the new report |
+| `reports/latency-gap-investigation.md` | the archaeology | correct as-is |
+| `pending-review/handover-latency-line-correction.md` | this file | — |
+| `docs/research-log.md:456` | Shrestha's own note, which already says the figure is not comparable | **leave alone — his file, and he is right**; but see the tension below |
+
+### [!] `r9-per-stage-latency-and-memory.md:100` contains a withdrawn inference
+
+It currently reads:
+
+> **the logged figure is consistent with having been measured with
+> `--no-patchworkpp`** [...] 87.95/106.20 is close to 80.78/97.72
+
+**That inference is wrong and was already withdrawn.** Shrestha's own run has
+`ground` at 12.41 ms, which means Patchwork++ *was* active, and the
+`--cells 910000` reproduction explains the number without any fallback. This is
+a stale claim standing in a committed report and it should be corrected in the
+same pass as the handover line, not left to be found later.
+
+### A real cross-document tension, not mine to resolve
+
+`docs/research-log.md:456` states **"the median meets 10 Hz with 10.8 ms to
+spare; the p99 is 0.43 ms over"** — that is Shrestha's own whole-frame
+measurement (89.18 p50 / 100.43 p99), not the 80.78 figure, and it is a
+*different* claim from the handover's. It disagrees with my 108.65 / 127.23 on
+the same sequence and code.
+
+Both may be correct on their own hosts — that is exactly the ~1.7x `ground`
+difference documented in `reports/latency-gap-investigation.md`. **It should not
+be silently reconciled by editing either number.** It is the clearest argument
+for the actual fix: one agreed reference host, one agreed command, one number.
