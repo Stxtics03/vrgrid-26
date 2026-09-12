@@ -1,4 +1,5 @@
 # Morning summary — overnight 2026-09-11
+### …plus a 2026-09-12 update, below. Read that first.
 
 **Nothing was pushed. `origin` was never contacted. `vrgrid-26` was never
 checked, created or mentioned to GitHub.** Four local commits, all additive.
@@ -34,6 +35,12 @@ they reference things that do not exist in this repository. Details in
 ### The three findings that matter most
 
 **(a) The 10 Hz claim does not reproduce — under any configuration.**
+> ⚠️ **SUPERSEDED 12 Sep — this conclusion is WITHDRAWN.** The measurements it
+> rests on are not stable on this machine, and the real explanation is
+> different and better. See the update section at the end of this file and
+> `reports/latency-10hz-diagnosis.md`. Left in place as a record of what I
+> thought overnight, not as a finding.
+
 `handover-2026-09-02.md:23` lists, under *"measured on real data and holding"*,
 frame p50 **80.78** / p99 **97.72**, "meets 10 Hz", from `timing_table.py --seq 08`.
 Same script, same sequence, tonight:
@@ -228,3 +235,124 @@ identical to the state I found it in. **Not investigated further, not fixed.**
 
 Nothing I added can affect the suite: every commit tonight is a new `.md` or
 `.diff` file under `reports/` or `pending-review/`.
+
+---
+---
+
+# Update — 2026-09-12, after JP's review decisions
+
+## Applied (committed `f3a0337`)
+
+| diff | result |
+|---|---|
+| `timing-table-unicode-crash.diff` | applied. `--alloc` now exits **0** (was 1). Broader stdout-reconfigure question **deferred**, not answered. |
+| `r7b-mIoU-69.8-is-an-error.diff` | applied to `src/perception/semantics.py` and `src/perception/CLAUDE.md`. |
+
+`ruff`: 1 error, the pre-existing `tests/test_metrics.py:472` E741. Tests green.
+
+### ⚑ CONFIRMED FOLLOW-UP — five files still quote 69.8%
+
+Not a maybe. Each needs the same correction (÷14 → ÷15; `other-ground` has a
+real computed 0.0% IoU over 150 GT points, not insufficient data, so it counts):
+
+| file | line |
+|---|---|
+| `docs/handover-2026-09-02.md` | **23** and **169** |
+| `docs/demo-runbook.md` | **229** |
+| `docs/perception-dashboard-summary.md` | **150** ← JP's lane |
+| `docs/research-log.md` | **402** |
+
+`research-log.md:402` is the odd one — the *same document* proves 69.8% wrong at
+line 430 and still quotes it at 402. Not touched tonight, by instruction.
+
+## New — the 10 Hz diagnosis (`reports/latency-10hz-diagnosis.md`)
+
+**The answer was already in the repo.** Shrestha, 4 Sep, `adb2c73`:
+
+> the 80.78 / 97.72 in the handover is **not comparable** to this — it is the
+> **back half on a synthetic sweep**, where the same back half on real seq 08
+> data costs 46.32 ms p50.
+
+So the handover's label is wrong in **both** halves: it is not the frame, and it
+is not `--seq 08`. The correct whole-frame number exists in the same entry —
+**p50 89.18 / p99 100.43, max 109.28, on real seq 08, quiet machine** — and
+**misses 10 Hz at p99 by 0.43 ms**. It was never propagated to the handover,
+which still reads "meets 10 Hz" in its *proven* table.
+
+### On the fallback banner you asked me to look for
+
+**It could not have appeared, and no logs survive anyway.**
+
+- No `.log`, no `*_out.txt`, no `scratchpad/` was ever committed — nothing from
+  that run exists.
+- The banner postdates the run by **10.7 hours**: introduced by PR #32
+  (`c6fad5e`), merged `bc11caf` at **2026-09-03 07:33:42 +0530**; the handover
+  commit `464ad8b` is **2026-09-02 20:51:13 +0530**. The code that prints it did
+  not exist yet.
+- Moot regardless — the run was synthetic, and the synthetic path never calls
+  `ground` at all.
+
+### I withdrew my overnight claim, and I was wrong twice
+
+1. **The `--no-patchworkpp` hypothesis is wrong.** Shrestha's run had `ground`
+   at 12.41 ms p50 — Patchwork++ **was** active. My arithmetic (87.95 ≈ 80.78)
+   was coincidence.
+2. **"Does not reproduce under any configuration" is not supported.** This
+   machine cannot measure whole-frame latency reliably right now — RAM 2.48 GB
+   free of 16.9, `MemCompression` holding 649 MB. Identical back-to-back runs:
+
+| command | spread across identical runs |
+|---|---|
+| synthetic, 100 frames | p50 stable ±2% (44.03/45.56/44.42), **p99 varies 1.9×** (179–339) |
+| synthetic, 200 frames | **p50 varies 3.7×** (42.15 → 155.26) |
+| real seq 08, 200 frames | p50 107–152, **p99 varies 4.2×** (121.5 → 510.1) |
+
+100-frame p50 is ~3.4× lower *per frame* than 200-frame p50 on identical code —
+superlinear in run length, the signature of accumulating memory pressure rather
+than compute. **Shrestha's quiet-machine 89.18 / 100.43 is the better estimate
+and nothing here should revise it in either direction.** One run on a machine
+with >8 GB free would settle it.
+
+## New in `pending-review/`
+
+| file | what it needs from you |
+|---|---|
+| `r7-readme-counts-draft.md` | Three drafted lengths of the raw-counts framing (full / medium / one-line), plus notes on wording traps and where to place it. **No diff** — you place it. |
+| `r3-ring-boundary-under-anisotropy.md` | Implementation-ready design doc, now that I have the real content. |
+| `r5-sticky-safety-critical-class-bit.md` | Same. |
+
+### R3 — what to look at first
+
+Both `ring_of` (`lattice.py:111`) **and** `ring_of_into` (`:346`) implement the
+rule and must change identically — `ring_of_into` is the allocation-free frame
+path, so the nearest-corner test must not add an allocation. And **PR #31 made
+`metrics._ring_cells` filter on `ring_of(centre) == ring`** — if the ring rule
+moves to nearest-corner, §9.2 scores a different population than the map serves
+unless that moves too. Cross-lane, easy to miss. Three open questions listed at
+the end of the doc; I did not guess at them.
+
+### R5 — there is room, and one real weak point
+
+`flags` uses **4 of 8 bits** (`include/vrgrid/cell.py:44`), so bits 4–7 are
+free and **the 12-byte struct does not grow** — 8.94 MB and every derived ratio
+are untouched. But `include/vrgrid/` is the **frozen** directory: one constant
+still needs three-way sign-off.
+
+**The weak point is decay.** `frames_since_seen` is *"frames since the cell was
+observed"*, not *"since a VRU was observed"* — so on a continuously observed
+cell the bit **never decays**, which is exactly the busy near-field
+road-dominated cell where a VRU was most likely a transient minority. Three
+designs are laid out; **I did not choose between them.** The doc also gives the
+test that discriminates them, and recommends the bit be *rendered* before it is
+allowed to change any planning verdict.
+
+## Git
+
+```
+branch       main
+local HEAD   (see git log)
+origin/main  5e0ebf3   — still untouched, never fetched, never pushed
+```
+
+`vrgrid-26` still never checked. `src/perception/frnet/` still untouched. The
+Patchwork++ determinism bug still untouched and still the single test failure.
