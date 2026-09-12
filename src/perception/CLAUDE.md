@@ -6,7 +6,8 @@
   map looks plausible and slowly rotates. Run the static-wall test on Day 0.
 - **Wire things in, do not rebuild them.** Patchwork++ for ground, KISS-ICP
   for odometry. The standalone FRNet port in `frnet/` **works as of 2 Sep** —
-  98.3% point accuracy, 69.8% mIoU against the paper's 73.3%. It is still not
+  90.3% point accuracy over 200 frames of seq 08 and 65.2% mIoU
+  against the paper's 73.3% (98.3% is a single frame, seq 00 frame 43). It is still not
   the map's semantic source, and that is now a choice rather than a defect: GT
   `.label` files isolate the mapping contribution from segmentation quality.
   Run it with `scripts/frnet_eval.py`; report it alongside the map, never

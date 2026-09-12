@@ -9,12 +9,20 @@ Gate 6: the latency numbers on a slide come from here, not from memory.
 ⚑ **This is a lower bound on frame latency, not the frame total.** It times
   the back half of the frame -- binning, the `src/gpu` stages, and the `fuse()`
   that consumes the scatter's aggregate. The perception front end (load,
-  transform, range_image, semantics, motion) needs SemanticKITTI on disk, and
-  `src/run/__main__.py` still has `scatter`/`fuse` stubbed against Aakash's
-  grid, so there is no end-to-end loop to time yet. The unmeasured stages are
-  printed as rows with their owner and why, rather than omitted: a table
-  showing green rows and a healthy headroom, with the missing half silently
-  dropped, is exactly the shape of a number that gets called on stage.
+  transform, range_image, semantics, motion) needs SemanticKITTI on disk. The
+  unmeasured stages are printed as rows with their owner and why, rather than
+  omitted: a table showing green rows and a healthy headroom, with the missing
+  half silently dropped, is exactly the shape of a number that gets called on
+  stage.
+
+  **The whole frame HAS now been timed, elsewhere.** The two reasons this
+  docstring used to give for there being no end-to-end loop are both obsolete:
+  `src/run/engine.py:297-309` calls the real `scatter_sorted` and `fuse`, and
+  the dataset is complete on disk. The end-to-end figure, 200 frames of real
+  seq 08, is **p50 89.18 ms / p99 100.43 ms / max 109.28 ms** against a 100 ms
+  budget -- see `docs/research-log.md` (the 2026-09-04 entry, twelve stages,
+  flat and disjoint). Quote that for frame latency, and this table for the
+  per-stage breakdown of the back half. Do not add the two together.
 
 **Built against the real interfaces, not a private mock.** The points are a
 synthetic HDL-64E sweep, but everything downstream of them is the shipping

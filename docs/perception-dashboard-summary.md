@@ -147,7 +147,7 @@ a second hardcoded copy.
 **Status changed on 2 September.** The standalone port was non-functional for
 five days at ~15 % point accuracy, and this section used to say so. It now
 reproduces the pretrained checkpoint: **98.3 %** point accuracy on seq 00
-frame 43, **69.8 %** mIoU over 200 frames of seq 08 against the paper's
+frame 43, **65.2 %** mIoU over 200 frames of seq 08 against the paper's
 **73.3 %** (`scripts/frnet_eval.py`). Fine-tuning was tried and **rejected**,
 −0.5 mIoU (`docs/handover-2026-09-02.md`).
 

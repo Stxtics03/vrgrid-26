@@ -6,8 +6,7 @@
 [![Problem Statement](https://img.shields.io/badge/PS-SIH26053-blue)](https://www.sih.gov.in/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
-[![C++](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
-[![CUDA](https://img.shields.io/badge/CUDA-supported-76B900.svg)](https://developer.nvidia.com/cuda-zone)
+[![NumPy](https://img.shields.io/badge/NumPy-CPU%20reference-013243.svg)](https://numpy.org/)
 
 > **VRgrid is a deterministic, memory-bounded, foveated 2.5D LiDAR mapping system that allocates spatial resolution according to range, semantics and direction — while preserving uncertainty during coarsening and removing transient dynamic-object ghosts.**
 
@@ -78,7 +77,7 @@ All rings remain part of one global **5 cm lattice**, allowing the representatio
 | Cell storage                |                   **12 B** |
 | Memory vs uniform 5 cm 2.5D |            **21.5× lower** |
 | Memory vs dense 5 cm 3D     |             **286× lower** |
-| Rebuild latency             |                **2.45 ms** |
+| End-to-end frame latency    |  **89.18 ms p50 / 100.43 p99** |
 | Ghost trails                |       **0 / 4,071 frames** |
 | Determinism                 | **Bit-identical map hash** |
 
@@ -169,7 +168,8 @@ This is deliberately different from approaches that make resolution depend only 
                         │
                         ▼
               ┌─────────────────┐
-              │ CUDA Acceleration│
+              │  Kernel Layer   │
+              │  numpy · CPU    │
               │                 │
               │ Project         │
               │ Fuse            │
@@ -267,19 +267,30 @@ VRgrid is designed around a fixed computational and memory budget.
 
 All measurements use the same spatial extent and vertical range.
 
-### GPU
+### Compute
 
-CUDA kernels cover:
+**The mapping pipeline is a CPU reference implementation in numpy. There is no
+CUDA kernel in this repository, and every latency figure quoted here was measured
+single-threaded on an Intel i7-14650HX.**
 
-* Point projection
-* Fusion
-* Split
-* Merge
-* Conservative max/min pyramid generation
+It is written the way GPU code is written, and each decision is measured:
 
-The reported rebuild time is **2.45 ms**.
+* **Structure-of-arrays** throughout, for coalesced access.
+* **int32 fixed-point accumulation, never float atomics** — float atomic adds are
+  non-associative, so a float map differs run to run. Integer `atomicAdd` is exact
+  and associative, which is why the determinism test is CI-blocking.
+* **Zero allocation in the frame loop** — 8.15 → 1.31 MB/frame, p99 74.7 → 49.4 ms.
+* **A device seam in the allocator** (`allocators.array_module()`), so the arrays
+  can move to cupy without touching the kernels.
 
-The system is intended to run on **Jetson-class hardware** without requiring a discrete desktop GPU.
+Porting to the device is the current cycle's work, tracked in
+`docs/gpu-lane/03-CUDA-PORT-PLAN.md`. The determinism guarantee is expected to
+survive it unchanged, because the accumulator is integer.
+
+The one component that does run on CUDA today is FRNet inference, through torch —
+and FRNet is deliberately not in the mapping pipeline (see below).
+
+The intended deployment target is **Jetson-class hardware**.
 
 ---
 
@@ -389,8 +400,6 @@ Patchwork++ is used for ground segmentation, while the mapping pipeline itself r
 
 ```text
 Python 3.11
-C++17
-CUDA
 NumPy
 SemanticKITTI
 Patchwork++
@@ -446,23 +455,22 @@ Recommended environment:
 
 ```text
 Python 3.11+
-C++17
-CUDA-capable GPU
 pytest
 ```
 
-A Jetson-class GPU is sufficient for the intended deployment target.
+No GPU is required to run the mapping pipeline or the test suite. A Jetson-class
+GPU is the intended deployment target for the port.
 
 ## Clone
 
 ```bash
-git clone https://github.com/Stxtics03/vrgrid.git
-cd vrgrid
+git clone https://github.com/Stxtics03/vrgrid-26.git
+cd vrgrid-26
 ```
 
 ## Environment
 
-Install the Python dependencies specified by the repository and build the native/CUDA components according to the project documentation.
+Install the Python dependencies specified by the repository. There are no native or CUDA components to build.
 
 Refer to:
 
@@ -686,7 +694,6 @@ VRgrid builds on the open-source robotics, autonomous-driving and mapping resear
 * Patchwork++
 * Rerun
 * NumPy
-* CUDA
 * pytest
 
 We also acknowledge the researchers whose work established the foundations of multi-resolution mapping, elevation mapping, uncertainty-aware spatial representations and dynamic environment perception.

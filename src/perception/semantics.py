@@ -11,8 +11,8 @@ their class is not.
 
 Why not FRNet -- and the reason CHANGED on 2 Sep. The port used to be
 non-functional (~15% point accuracy) and the honest answer was "it does not
-work". It works now: 98.3% point accuracy on seq 00 frame 43, 69.8% mIoU over
-seq 08 against the paper's 73.3% (`scripts/frnet_eval.py`). The helpers below
+work". It works now: 98.3% point accuracy on seq 00 frame 43, and over 200 frames
+of seq 08 90.3% point accuracy and 65.2% mIoU against the paper's 73.3% (`scripts/frnet_eval.py`). The helpers below
 still raise, but the reason is now a DELIBERATE CHOICE rather than a defect --
 taking semantics from the ground-truth .label files isolates the mapping
 contribution from segmentation quality, which is what §9's evaluation is for.
