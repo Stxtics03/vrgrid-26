@@ -14,12 +14,16 @@ non-functional (~15% point accuracy) and the honest answer was "it does not
 work". It works now: 90.3% POINT ACCURACY AND 65.2% mIoU OVER 200 FRAMES OF
 SEQ 08, against the paper's 73.3% (`scripts/frnet_eval.py --frames 200`).
 
-⚑ Two denominators, both from that same run, so quote the one you mean.
-  65.2% averages the 15 classes that actually OCCUR in seq 08; 69.8% also
-  drops `other-ground`, which has 150 ground-truth points in 22.7 M, and is
-  the figure `docs/handover-2026-09-02.md` and the research log quote. The
-  original 51.5% averaged 19 "classes", four of which have no ground truth at
-  all -- that one is simply wrong and is not a variant.
+⚑ 65.2% IS THE FIGURE, and the other two numbers in circulation are
+  ARITHMETIC ERRORS rather than alternative denominators. The 15 per-class
+  IoUs sum to 977.7 (research-log.md, 3 Sep). 51.5% divides that by 19,
+  counting four classes with no ground truth at all. 69.8% divides it by 14,
+  dropping `other-ground` -- which has 150 ground-truth points over the 200
+  frames and an IoU of 0.0%, so it is PRESENT and therefore counted. The
+  committed `frnet_eval.py` prints 65.2%, and the untouched loop path and
+  `--fast-scatter` agree at 90.3% / 65.2% / 61.1%.
+  69.8% is still carried by `docs/handover-2026-09-02.md:23` and `:169`,
+  `docs/demo-runbook.md:229` and `docs/perception-dashboard-summary.md:150`.
 
 ⚑ 98.3% IS NOT THE HEADLINE. It is a single-frame port sanity check on seq 00
   frame 43, and it is not comparable to a 200-frame mIoU. Pairing it with one

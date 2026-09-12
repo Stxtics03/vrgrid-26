@@ -7,9 +7,11 @@
 - **Wire things in, do not rebuild them.** Patchwork++ for ground, KISS-ICP
   for odometry. The standalone FRNet port in `frnet/` **works as of 2 Sep** —
   **90.3% point accuracy and 65.2% mIoU over 200 frames of seq 08**, against
-  the paper's 73.3%. (65.2% averages the 15 classes that actually occur in
-  seq 08; the same run reads 69.8% if `other-ground` — 150 GT points in 22.7 M
-  — is excluded too, which is the figure `docs/handover-2026-09-02.md` quotes.
+  the paper's 73.3%. (65.2% is THE figure. 69.8% -- still in the handover, the
+  runbook and `perception-dashboard-summary.md:150` -- is an arithmetic error,
+  not a denominator choice: it divides the same 15 per-class IoUs by 14,
+  dropping `other-ground`, which has 150 GT points and IoU 0.0% and is
+  therefore present and countable (research-log.md, 3 Sep).
   **98.3% is a single-frame port sanity check, seq 00 frame 43** — not the
   headline, and not comparable to a 200-frame mIoU.) It is still not the map's
   semantic source, and that is a choice rather than a defect: GT `.label` files
