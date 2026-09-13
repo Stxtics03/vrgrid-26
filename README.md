@@ -8,7 +8,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![NumPy](https://img.shields.io/badge/NumPy-CPU%20reference-013243.svg)](https://numpy.org/)
 
-> **VRgrid is a deterministic, memory-bounded, foveated 2.5D LiDAR mapping system that allocates spatial resolution according to range, semantics and direction — while preserving uncertainty during coarsening and removing transient dynamic-object ghosts.**
+> **VRgrid is a deterministic-by-design, memory-bounded, foveated 2.5D LiDAR mapping system that allocates spatial resolution according to range, semantics and direction — while preserving uncertainty during coarsening and removing transient dynamic-object ghosts.**
 
 **Smart India Hackathon 2026 · SIH26053 · DRDO · Smart Vehicles · Team Chronicles.exe**
 
