@@ -33,7 +33,8 @@ At the same time, accumulated maps can retain stale elevation information from m
 * Variance-preserving split/merge operations.
 * Dynamic-object ghost removal using range-image visibility.
 * Resolution-independent world-coordinate queries.
-* Deterministic execution with bit-identical map hashes.
+* Deterministic execution with bit-identical map hashes — **design target;
+  not currently achieved**, see [Determinism](#determinism).
 
 The result is a compact **2.5D elevation map** designed for downstream robotic planning and perception.
 
@@ -79,7 +80,7 @@ All rings remain part of one global **5 cm lattice**, allowing the representatio
 | Memory vs dense 5 cm 3D     |             **286× lower** |
 | End-to-end frame latency    |  **89.18 ms p50 / 100.43 p99** |
 | Ghost trails                |       **0 / 4,071 frames** |
-| Determinism                 | **Bit-identical map hash** |
+| Determinism                 | Design target: **bit-identical map hash** — **not yet achieved**, see below |
 
 The fixed footprint is allocated at startup:
 
@@ -243,13 +244,32 @@ VRgrid uses:
 * Integer/fixed-point accumulation where appropriate.
 * Associative integer addition.
 * Deterministic partitioning.
-* Bit-identical map hashes.
 * Automated theorem/invariant tests.
 * CI gates for every merge.
 
-The same input should therefore produce the same map representation and the same map hash.
+The same input should therefore produce the same map representation and the same
+map hash, and a **bit-identical map hash** is the property the design targets.
 
 The test suite includes a partition test over **10⁶ points**, ensuring that point partitioning does not alter the resulting map.
+
+**Current status — the guarantee does not hold yet.** A known lifetime bug in the
+ground-segmentation singleton breaks it on repeated passes over the same data:
+`ground._estimator` is a module-level Patchwork++ estimator that accumulates
+state, so re-processing a scan it has already seen returns a different
+ground/non-ground verdict for that scan. Two replays of the same 50 frames in
+one process therefore differ, and `test_real_sequence_replay_is_identical` —
+which is CI-blocking, and correct to be — **currently fails**.
+
+Measured: 1,245 of 1,479,013 points change verdict between a first and second
+pass, in 4 of 12 frames. Two *separate* estimators making one pass each agree
+exactly, 0 points differing — so the architecture is sound and the defect is
+ownership of the estimator's lifetime, not the accumulation scheme.
+
+The integer accumulation and associative addition above are real and do support
+bit-identical determinism; **it is not currently guaranteed.** Tracked as
+**Issue #1**; full diagnosis in `reports/ring1-reproduction-investigation.md`
+and `OPEN-ITEMS.md` (D1). The fix is a design decision about who owns the
+estimator and is deliberately not patched ad hoc.
 
 ---
 
@@ -278,7 +298,9 @@ It is written the way GPU code is written, and each decision is measured:
 * **Structure-of-arrays** throughout, for coalesced access.
 * **int32 fixed-point accumulation, never float atomics** — float atomic adds are
   non-associative, so a float map differs run to run. Integer `atomicAdd` is exact
-  and associative, which is why the determinism test is CI-blocking.
+  and associative, which is why the determinism test is CI-blocking. (That test
+  is currently **failing** for a reason unrelated to the accumulator — see
+  [Determinism](#determinism).)
 * **Zero allocation in the frame loop** — 8.15 → 1.31 MB/frame, p99 74.7 → 49.4 ms.
 * **A device seam in the allocator** (`allocators.array_module()`), so the arrays
   can move to cupy without touching the kernels.
