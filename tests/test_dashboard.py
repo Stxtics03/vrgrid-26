@@ -267,6 +267,96 @@ def test_pipeline_view_without_engine_skips_the_surface(tmp_path):
     view = PipelineView(load_schedule("5/10/20/40"), spawn=False,
                         save_path=str(tmp_path / "n.rrd"), engine=None)
     view.log_frame(_wall_frame(0))  # no engine -> no occupied surface, no error
+    view.finish()                   # and no final map either
+
+
+# --------------------------------------------------------------------------
+# viewer frame rate -- points, not boxes; the map redrawn every MAP_INTERVAL
+# --------------------------------------------------------------------------
+
+
+def _spy_logs(monkeypatch):
+    """Record every `rr.log(path, archetype)` call, still passing it through."""
+    import rerun as rr
+
+    calls, real = [], rr.log
+
+    def spy(path, *args, **kw):
+        calls.append((path, args[0] if args else None))
+        return real(path, *args, **kw)
+
+    monkeypatch.setattr(rr, "log", spy)
+    return calls
+
+
+def test_dense_map_layers_are_points_sized_to_the_cell(tmp_path, monkeypatch):
+    """Rerun processes box instances one at a time on the CPU; points take the
+    GPU path, ~100x faster (rerun-io/rerun#10276). ~205,000 map cells a frame
+    as boxes is what stalled the viewer, so the dense layers must stay points
+    -- and each radius must be half its ring's cell, or the 5 -> 10 -> 20 ->
+    40 cm foveation the view exists to show stops reading."""
+    import rerun as rr
+    from vrgrid.dash.pipeline_view import PipelineView
+    from vrgrid.run.engine import MapEngine
+
+    sched = load_schedule("5/10/20/40")
+    engine = MapEngine(sched, ghost_removal=True)
+    view = PipelineView(sched, spawn=False, save_path=str(tmp_path / "pts.rrd"),
+                        engine=engine, map_interval=1)
+    calls = _spy_logs(monkeypatch)
+    for i in range(3):
+        f = _wall_frame(i)
+        engine.step(f)
+        view.log_frame(f)
+
+    dense = {"world/map/occupied", "world/map/free", "world/map/unknown"}
+    drawn = [(p, a) for p, a in calls if p in dense and not isinstance(a, rr.Clear)]
+    assert "world/map/occupied" in {p for p, _ in drawn}
+    assert all(isinstance(a, rr.Points3D) for _, a in drawn)
+
+    occupied = [a for p, a in drawn if p == "world/map/occupied"][-1]
+    radii = occupied.radii.as_arrow_array().to_numpy(zero_copy_only=False)
+    want = view._cell_m_per_slot(engine.occupied_slots()) / 2.0
+    assert np.allclose(np.sort(radii), np.sort(want))
+    assert np.unique(np.round(radii, 3)).size >= 2     # more than one cell size
+
+
+def test_map_redraws_on_the_interval_and_finish_draws_the_final_state(tmp_path, monkeypatch):
+    """The map is drawn every `map_interval` frames, the point cloud every
+    frame, and `finish()` redraws once so a run that stops between intervals
+    still ends on the true final map."""
+    from vrgrid.dash.pipeline_view import MAP_INTERVAL, PipelineView
+    from vrgrid.run.engine import MapEngine
+
+    assert MAP_INTERVAL > 1, "a map redraw every frame is what stalled the viewer"
+
+    sched = load_schedule("5/10/20/40")
+    engine = MapEngine(sched, ghost_removal=True)
+    view = PipelineView(sched, spawn=False, save_path=str(tmp_path / "int.rrd"),
+                        engine=engine, map_interval=3)
+    calls = _spy_logs(monkeypatch)
+    for i in range(8):                      # draws on 0, 3, 6; stops one past
+        f = _wall_frame(i)
+        engine.step(f)
+        view.log_frame(f)
+
+    def count(path):
+        return sum(1 for p, _ in calls if p == path)
+
+    assert count("world/points") == 8
+    assert count("world/map/occupied") == 3
+    assert count("memory") == 3
+
+    view.finish()
+    assert count("world/map/occupied") == 4
+    assert view._last_occupied_n == len(engine.occupied_slots())
+
+
+def test_playback_fps_is_the_sensor_rate_from_config():
+    from vrgrid.dash._config import playback_fps
+
+    assert playback_fps() == pytest.approx(1.0 / load_thresholds()["fusion"]["frame_dt_s"])
+    assert playback_fps() == pytest.approx(10.0)     # KITTI HDL-64E, 10 Hz
 
 
 # --------------------------------------------------------------------------
@@ -319,8 +409,10 @@ def test_memory_overlay_tracks_the_real_occupied_count(tmp_path):
 
     sched = load_schedule("5/10/20/40")
     engine = MapEngine(sched, ghost_removal=True)
+    # map_interval=1: this pins the drawn count to the counted one on EVERY
+    # frame, so the map has to be drawn on every frame for it to be checkable.
     view = PipelineView(sched, spawn=False, save_path=str(tmp_path / "mem.rrd"),
-                        engine=engine)
+                        engine=engine, map_interval=1)
 
     seen = []
     for f in iter_pipeline("00", 20):

@@ -29,6 +29,7 @@ they track the vehicle. Points are world-frame and accumulate on the timeline.
 
 import numpy as np
 import rerun as rr
+import rerun.blueprint as rrb
 from vrgrid.cell import OCC_FREE, OCC_UNKNOWN
 from vrgrid.grid.confidence import drivable_confidence
 from vrgrid.grid.features import detect
@@ -36,6 +37,7 @@ from vrgrid.grid.features import detect
 from ._config import (
     blind_cone_radius_m,
     memory_overlay_markdown,
+    playback_fps,
     schedule_legend_markdown,
 )
 
@@ -98,6 +100,27 @@ _UNKNOWN_RGBA = (150, 90, 160, 90)    # muted violet, matches the blind-cone "un
 # the final call after the loop exists: the last frame is the one a still gets
 # taken from.
 FEATURE_INTERVAL = 20
+
+# --- viewer frame rate -------------------------------------------------------
+#
+# The dense map layers (occupied / free / unknown / confidence) are drawn as
+# `Points3D` sized to the cell, not `Boxes3D`, and redrawn every `MAP_INTERVAL`
+# frames rather than every frame. Both are about the viewer, not the map:
+#
+#   * Rerun processes box instances one at a time on the CPU; points and
+#     spheres take a GPU fast path the Rerun team puts at ~100x faster
+#     (rerun-io/rerun#10276, which names voxel occupancy grids as the case).
+#     Seq 00 has ~205,000 map cells a frame, which is where playback stalled.
+#     A point of radius cell/2 still steps 5 -> 10 -> 20 -> 40 cm with range,
+#     so the foveation reads exactly as it did.
+#   * Resending every cell every frame is also most of the live-run overhead:
+#     the pipeline is 81 ms p50, a live scene ~220 ms. The map changes slowly
+#     and Rerun holds the last value between logs, so the point cloud, ghosts
+#     and vehicle stay at the full frame rate while the map refreshes at 2 Hz.
+#
+# `finish()` redraws once after the loop so a run that stops between intervals
+# still ends on the true final map -- the frame a still gets taken from.
+MAP_INTERVAL = 5
 
 _CURB_RGBA = (230, 159, 0, 235)       # Okabe-Ito orange -- a positive step, drawn standing up
 _POTHOLE_RGBA = (213, 94, 0, 245)     # Okabe-Ito vermillion -- a negative one, drawn sunken
@@ -187,8 +210,11 @@ def get_display_points(frame, ghost_removal: bool, color_by: str = "class",
 class PipelineView:
     def __init__(self, schedule, spawn: bool = False, save_path: str | None = None,
                  color_by: str = "class", ghost_removal: bool = True,
-                 palette: str = "semantickitti", engine=None, features: bool = False):
+                 palette: str = "semantickitti", engine=None, features: bool = False,
+                 map_interval: int = MAP_INTERVAL):
         self.color_by = color_by
+        # Frames between map redraws -- see MAP_INTERVAL. 1 draws every frame.
+        self.map_interval = max(1, int(map_interval))
         self.ghost_removal = ghost_removal
         self.palette = palette
         self.schedule = schedule
@@ -206,6 +232,15 @@ class PipelineView:
             rr.save(save_path)
 
         rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
+        # Play the `frame` timeline at the sensor's rate so a baked recording
+        # runs in real time; Rerun otherwise picks its own fps for a sequence
+        # timeline. No views are given, so the viewer keeps its automatic
+        # layout. A viewer too old for `TimePanel(fps=)` keeps its default.
+        try:
+            rr.send_blueprint(rrb.Blueprint(rrb.TimePanel(timeline="frame",
+                                                          fps=playback_fps())))
+        except (AttributeError, TypeError):
+            pass
         rr.log(
             "instructions",
             rr.TextDocument(
@@ -213,15 +248,17 @@ class PipelineView:
                 "entity panel).\nvisible = ghost removal OFF (trails behind moving "
                 "objects)\nhidden  = ghost removal ON\n\n"
                 "Map occupancy (when a MapEngine is attached), math §10.1:\n"
-                "  `world/map/occupied`  raised solid boxes, coloured by height\n"
-                "  `world/map/free`      flat translucent slate tiles -- looked, clear\n"
+                "  `world/map/occupied`  points sized to the cell, coloured by height\n"
+                "  `world/map/free`      slate points at the ground datum -- looked, clear\n"
                 "  `world/map/unknown`   observed-but-still-unknown cells + the blind "
                 "cone; never-observed cells are not drawn.\n"
-                "Unknown is not free -- they are separate entities on purpose.\n\n"
+                "Unknown is not free -- they are separate entities on purpose.\n"
+                f"The map layers redraw every {self.map_interval} frame(s); the point "
+                "cloud, ghosts and vehicle update every frame.\n\n"
                 "With `--features` (math §7.4, §7.5):\n"
                 "  `world/map/curbs`      orange boxes standing at the measured rise\n"
                 "  `world/map/potholes`   vermillion boxes sunk to the measured depth\n"
-                "  `world/map/confidence` flat tiles above the surface, dark = no "
+                "  `world/map/confidence` points above the surface, dark = no "
                 "confidence in drivability, light = full.\n"
                 "These recompute every 20 frames, not every frame: the detector is a "
                 "full-window pass and costs ~1.1 s.\n\n"
@@ -271,7 +308,7 @@ class PipelineView:
 
     def _cell_m_per_slot(self, slots: np.ndarray) -> np.ndarray:
         """Cell edge length (m) for each occupied slot, from the ring it lives
-        in. This is what makes the foveation visible: a box drawn at a cell's
+        in. This is what makes the foveation visible: a point drawn at a cell's
         own size grows from 5 cm near the vehicle to 40 cm at 100 m."""
         out = np.full(len(slots), self.engine.sched.base_cell_m, dtype=np.float32)
         for layout in self.engine.handle.rings:
@@ -292,7 +329,8 @@ class PipelineView:
 
     def _log_occupied(self):
         """The real 2.5D occupied surface: every cell the map currently calls
-        OCCUPIED, drawn as a box at its world xy, at its visibility height z
+        OCCUPIED, drawn as a point of radius cell/2 at its world xy, at its
+        visibility height z
         (ceiling where one was seen, ground otherwise -- the same height §10.4
         tests), sized to its ring's cell. `--show-ghosts` keeps the moving
         car's cells here; the default clears them via §10.4, so this entity is
@@ -307,19 +345,15 @@ class PipelineView:
             return
         cell_m = self._cell_m_per_slot(slots)
         centres = np.stack([x, y, z], axis=1).astype(np.float32)
-        half = np.stack(
-            [cell_m / 2.0, cell_m / 2.0, np.full_like(cell_m, 0.02)], axis=1
-        ).astype(np.float32)
         rr.log(
             "world/map/occupied",
-            rr.Boxes3D(centers=centres, half_sizes=half,
-                       colors=_height_ramp(z), fill_mode="solid"),
+            rr.Points3D(centres, radii=cell_m / 2.0, colors=_height_ramp(z)),
         )
 
     def _log_free(self):
-        """FREE cells -- observed and clear -- as flat translucent tiles at the
-        ground datum, sized to their ring's cell so the foveation still reads.
-        Distinct from OCCUPIED (which is solid and raised) and from UNKNOWN
+        """FREE cells -- observed and clear -- as translucent slate points at
+        the ground datum, sized to their ring's cell so the foveation still
+        reads. Distinct from OCCUPIED (height-coloured) and from UNKNOWN
         (undrawn / blind cone): "looked and clear" is not "did not look"."""
         free = np.flatnonzero(self.engine.occ_state == OCC_FREE)
         if len(free) == 0:
@@ -328,13 +362,9 @@ class PipelineView:
         x, y, z = self._centres_world(free)
         cell_m = self._cell_m_per_slot(free)
         centres = np.stack([x, y, z], axis=1).astype(np.float32)
-        half = np.stack(
-            [cell_m / 2.0, cell_m / 2.0, np.full_like(cell_m, 0.01)], axis=1
-        ).astype(np.float32)
         rr.log(
             "world/map/free",
-            rr.Boxes3D(centers=centres, half_sizes=half,
-                       colors=[_FREE_RGBA], fill_mode="solid"),
+            rr.Points3D(centres, radii=cell_m / 2.0, colors=[_FREE_RGBA]),
         )
 
     def _log_unknown(self):
@@ -352,13 +382,9 @@ class PipelineView:
         x, y, z = self._centres_world(seen_unknown)
         cell_m = self._cell_m_per_slot(seen_unknown)
         centres = np.stack([x, y, z], axis=1).astype(np.float32)
-        half = np.stack(
-            [cell_m / 2.0, cell_m / 2.0, np.full_like(cell_m, 0.01)], axis=1
-        ).astype(np.float32)
         rr.log(
             "world/map/unknown",
-            rr.Boxes3D(centers=centres, half_sizes=half,
-                       colors=[_UNKNOWN_RGBA], fill_mode="solid"),
+            rr.Points3D(centres, radii=cell_m / 2.0, colors=[_UNKNOWN_RGBA]),
         )
 
     def _ring_slices(self):
@@ -470,7 +496,7 @@ class PipelineView:
           flagged rather than fixed. A dark ring-3 tile in a recording made
           before that fix means "unlabelled beyond 50 m", not "hazard".
         """
-        cent, cols, half = [], [], []
+        cent, cols, rad = [], [], []
         for level, (sl, side) in enumerate(self._ring_slices()):
             cell_m = self.engine.sched.rings[level].cell_m
             conf = drivable_confidence(self.engine.handle.grid, sl, side, cell_m,
@@ -481,16 +507,15 @@ class PipelineView:
             x, y, z = self._centres_world(seen + self.engine.handle.rings[level].offset)
             cent.append(np.stack([x, y, z + 0.15], axis=1))
             cols.append(_confidence_ramp(conf[seen]))
-            half.append(np.stack([np.full(seen.size, cell_m / 2.0),
-                                  np.full(seen.size, cell_m / 2.0),
-                                  np.full(seen.size, 0.01)], axis=1))
+            rad.append(np.full(seen.size, cell_m / 2.0, np.float32))
         if not cent:
             rr.log("world/map/confidence", rr.Clear(recursive=True))
             return
+        # Points, like the occupancy layers and for the same reason (see
+        # MAP_INTERVAL): this layer covers every observed cell.
         rr.log("world/map/confidence",
-               rr.Boxes3D(centers=np.concatenate(cent).astype(np.float32),
-                          half_sizes=np.concatenate(half).astype(np.float32),
-                          colors=np.concatenate(cols), fill_mode="solid"))
+               rr.Points3D(np.concatenate(cent).astype(np.float32),
+                           radii=np.concatenate(rad), colors=np.concatenate(cols)))
 
     def log_features(self):
         """Recompute and draw the §7.4 / §7.5 layers. ~1.2 s -- see
@@ -518,6 +543,24 @@ class PipelineView:
             ),
         )
 
+    def log_map(self):
+        """Draw the occupancy layers and the memory overlay at the current
+        time. Called every `map_interval` frames by `log_frame`, and once more
+        by `finish()`. No-op without an engine."""
+        if self.engine is None:
+            return
+        self._log_occupied()   # also refreshes engine.occ_state
+        self._log_free()
+        self._log_unknown()
+        self._log_memory()
+
+    def finish(self):
+        """Call once after the loop: redraws the map and the §7.4 / §7.5
+        layers so the recording ends on the true final state, whichever frame
+        the run stopped on. Both would otherwise be up to an interval stale."""
+        self.log_map()
+        self.log_features()
+
     def log_frame(self, frame):
         rr.set_time("frame", sequence=frame.index)
 
@@ -525,10 +568,9 @@ class PipelineView:
         rr.log("world/points", rr.Points3D(xyz, colors=colors, radii=0.03))
 
         if self.engine is not None:
-            self._log_occupied()   # also refreshes engine.occ_state
-            self._log_free()
-            self._log_unknown()
-            self._log_memory()
+            # Not every frame -- see MAP_INTERVAL. `finish()` draws the last.
+            if self._frames_logged % self.map_interval == 0:
+                self.log_map()
             # Not every frame: `features.detect` is 1,137 ms. The caller runs
             # one more pass after the loop so the final state is complete.
             if self.features and self._frames_logged % FEATURE_INTERVAL == 0:

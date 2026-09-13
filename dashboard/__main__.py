@@ -75,7 +75,7 @@ def main(argv=None) -> None:
             engine.step(frame)
         view.log_frame(frame)
         n += 1
-    view.log_features()   # final state; no-op unless --features
+    view.finish()   # final map + features state, whichever frame the run ended on
     start = f" from frame {args.start_frame}" if args.start_frame else ""
     print(f"{n} frames from sequence {args.seq}{start}"
           + (f" -> {args.save}" if args.save else ""))

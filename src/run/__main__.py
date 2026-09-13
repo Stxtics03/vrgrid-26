@@ -228,7 +228,7 @@ def main(argv=None) -> int:
             print(msg)
 
     if view is not None:
-        view.log_features()   # final state; no-op unless --features
+        view.finish()   # final map + features state, whichever frame the run ended on
     print(f"done: {n} frames, sequence {args.seq}")
     if ground_method == "semantic_fallback":
         print("[!] ground: SEMANTIC-CLASS FALLBACK, not Patchwork++ -- every "

@@ -35,6 +35,13 @@ def blind_cone_radius_m() -> float:
     return float(load_thresholds()["sensor"]["blind_cone_m"])
 
 
+def playback_fps() -> float:
+    """Timeline playback rate for recordings: the sensor's own frame rate,
+    `1 / fusion.frame_dt_s` (10 Hz on KITTI), so a baked scene plays back in
+    real time. Read from the frozen config, like every other rate here."""
+    return 1.0 / float(load_thresholds()["fusion"]["frame_dt_s"])
+
+
 def available_schedules() -> list[str]:
     """Schedule names discovered from `configs/schedule_*.yaml` -- no hardcoding.
 

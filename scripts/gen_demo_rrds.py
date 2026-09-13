@@ -90,6 +90,7 @@ def shot(name, seq, lo, hi, *, warmup=0, color_by="class", palette="semantickitt
             occ_last = c.occupied if c.occupied else occ_last
         view.log_frame(f)
         n += 1
+    view.finish()   # the map redraws every MAP_INTERVAL frames; end on the final one
     rr.disconnect()
     dt = time.perf_counter() - t0
     sz = path.stat().st_size / 1e6
