@@ -28,17 +28,25 @@ that machine.
 ### Environment variables
 
 ```bash
-export VRGRID_DATA_ROOT=/home/shrestha/Desktop/sih26/vrgrid/data/dataset
-export VRGRID_FRNET_CHECKPOINT=/home/shrestha/Desktop/sih26/vrgrid/checkpoints/frnet-semantickitti_seg.pth
+source scripts/env.sh          # or: VRGRID_ASSETS=/mnt/data source scripts/env.sh
 ```
 
-⚠️ **Both of those still point into the pre-migration checkout**, which also
-holds ~92 GB of gitignored assets that exist nowhere else: the 90 GB dataset,
-423 MB of FRNet checkpoints, 1.3 GB of `.rrd` demo recordings and 50 MB of
-figures and CSVs behind published numbers. That checkout is due to be deleted
-once its remote is archived, and deleting it today destroys all four. Moving
-them to a shared location both checkouts can reference is an open decision, not
-a task anyone has done.
+The three paths the pipeline needs that are not in git live outside every
+checkout, in `~/Desktop/sih26/assets`:
+
+| | | |
+|---|---|---|
+| `dataset/` | 90 GB | SemanticKITTI, sequences 00-21 plus poses |
+| `checkpoints/` | 423 MB | FRNet `.pth`, including the fine-tuned ones |
+| `figures/` | 50 MB | the PNG/SVG/CSV behind published figures |
+| `rerun-recordings/` | 1.3 GB | **orphaned** — baked `.rrd` from the removed dashboard |
+
+They are outside any checkout deliberately. During the vrgrid-26 migration two
+checkouts existed at once and all of this lived inside the older one, so
+deleting that checkout — which was the plan, once its remote is archived — would
+have destroyed the dataset, the checkpoints and every figure behind a published
+number. `VRGRID_ASSETS` overrides the location, which is how the AWS instance
+will point at its own volume.
 
 ## Two things that cost time to discover
 
