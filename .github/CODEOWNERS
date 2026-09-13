@@ -21,7 +21,6 @@
 /src/eval/          @AakashH2006
 /src/gpu/           @Stxtics03
 /src/perception/    @victorysingh
-/dashboard/         @victorysingh
 
 # Configs are frozen before the schedule comparison — changing one after that
 # invalidates the ablation, so it gets the same three-way review.

@@ -7,7 +7,6 @@ SIH26053. Foveated 2.5D elevation grid: cell size grows with range, semantics ca
 make test              # all unit tests — must pass before any merge
 make test-determinism  # same input twice -> identical map hash
 python -m vrgrid.run --seq 08 --schedule 5/10/20/40
-python -m vrgrid.dash  # Rerun dashboard, separate process
 ```
 
 ## Reference docs — read on demand, do not assume
@@ -44,7 +43,6 @@ src/grid/           lattice, rings, split/merge, fusion, refinement pool   [Aaka
 src/eval/           reference map, metrics, plan regret                    [Aakash]
 src/gpu/            kernels, allocators, timing                            [Shrestha]
 src/perception/     loader, transforms, range image, FRNet, ground         [JP]
-dashboard/          Rerun app                                             [JP]
 tests/              one file per module
 docs/               planning docs + research-log.md
 ```

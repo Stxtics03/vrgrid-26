@@ -1,5 +1,12 @@
 # Demo runbook — how to start it, and how to show it
 
+> ⚠️ **OBSOLETE as of 2026-09-13 — Rerun has been removed from the project.**
+> `scripts/demo.sh`, the `dashboard/` package and every `.rrd` recording this
+> document depends on are gone, so none of the commands below run. It is kept
+> rather than deleted because it is the clearest record of what the demo showed
+> and in what order, which is what anyone designing the replacement needs. Do
+> not follow it as instructions.
+
 *Companion to `docs/demo-safe-ranges.md` (which frames hold what) and
 `docs/defense-rehearsal-playbook.md` (what to say when they push back). This
 file is the operational one: the commands, the order, and the failure modes.*
