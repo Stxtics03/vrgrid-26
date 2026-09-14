@@ -445,11 +445,11 @@ def test_height_ramp_table_matches_the_exact_ramp():
 
 
 # --------------------------------------------------------------------------
-# the demo layout -- live panels, legend, square rings
+# the demo layout -- key numbers, two-line charts, legend strip, the car
 # --------------------------------------------------------------------------
 
 
-def test_status_panel_derives_every_figure_from_the_schedule():
+def test_key_numbers_table_derives_every_figure():
     from types import SimpleNamespace
 
     from vrgrid.cell import CELL_BYTES
@@ -458,33 +458,40 @@ def test_status_panel_derives_every_figure_from_the_schedule():
     sched = load_schedule("5/10/20/40")
     assert uniform_2_5d_baseline(sched)["bytes"] == (200 / 0.05) ** 2 * CELL_BYTES == 192e6
     alloc = sched.total_cells * CELL_BYTES
-    md = status_markdown(1284, 52_317, sched, ghost_removal=True,
-                         counters=SimpleNamespace(cleared=12_468, protected=10_748),
-                         totals={"cleared": 521_614, "protected": 429_012, "truncated": 0},
-                         frame_ms=85.0, ground_method="patchworkpp")
-    assert "Frame 1,284" in md and "52,317 occupied" in md
-    assert f"{192e6 / alloc:.1f}× smaller" in md                        # 21.5x, the report's
-    assert f"{dense_3d_baseline(sched)['bytes'] / alloc:,.0f}× smaller" in md   # 286x
-    assert "12,468 cleared, 10,748 spared this frame" in md
-    assert "0 truncated" in md and "cap hit" not in md
-    assert "within the 100 ms budget" in md and "Patchwork++" in md
-    slow = status_markdown(1284, 52_317, sched, ghost_removal=True, frame_ms=116.0)
-    assert "over the 100 ms budget" in slow and "8.6 fps" in slow
+    run = {"n": 8, "perception": 8 * 84.0, "engine": 8 * 55.0, "dashboard": 8 * 13.0,
+           "total": 8 * 152.0, "cleared": 50_841, "protected": 56_107, "truncated": 0,
+           "peak_occupied": 225_916}
+    md = status_markdown(
+        1284, 139_143, sched, ghost_removal=True,
+        counters=SimpleNamespace(cleared=9_214, protected=8_057, truncated=0), run=run,
+        timing_ms={"perception": 84.0, "engine": 55.0, "dashboard": 13.0, "total": 152.0},
+        ground_method="patchworkpp")
+    assert "Frame 1,284" in md and "ghost removal ON" in md and "Patchwork++" in md
+    assert "budget 100 ms per frame" in md
+    assert "| **Frame time** | **152 ms · 6.6 fps** | 152 ms · 6.6 fps |" in md
+    assert "| perception | 84 ms | 84 ms |" in md and "| map engine | 55 ms | 55 ms |" in md
+    assert "| **Ghost cells removed** | **9,214** | 50,841 |" in md
+    assert "| kept by the guard | 8,057 | 56,107 |" in md
+    assert "| skipped by the cap | 0 | 0 |" in md                 # no flag when it is 0
+    assert "**1.67 MB**" in md and "peak 2.71 MB" in md          # 139,143 / 225,916 x 12 B
+    assert f"**{192e6 / alloc:.1f}× more**" in md                 # 21.5x, the report's
+    assert f"**{dense_3d_baseline(sched)['bytes'] / alloc:,.0f}× more**" in md   # 286x
 
     off = status_markdown(5, 10, sched, ghost_removal=False)
-    assert "**OFF**" in off and "Run totals" not in off
-    assert "cap hit" in status_markdown(5, 10, sched, ghost_removal=True,
-                                        totals={"cleared": 1, "protected": 1, "truncated": 7})
+    assert "ghost removal OFF" in off and "| Ghost cells removed | off | off |" in off
+    assert "| **Frame time** | **—** | — |" in off                 # no timing: a dash, not a zero
+    capped = dict(run, truncated=7)
+    assert "skipped by the cap ⚑" in status_markdown(5, 10, sched, ghost_removal=True, run=capped)
 
 
-def test_legend_lists_every_ring_and_the_blind_cone():
+def test_legend_strip_names_every_ring_and_the_blind_cone():
     from vrgrid.dash._config import map_legend_markdown
 
     sched = load_schedule("5/10/20/40")
     md = map_legend_markdown(sched, color_by="class", blind_cone_m=blind_cone_radius_m())
     for r in sched.rings:                   # every ring's cell size AND its reach
         assert f"{r.cell_m * 100:g} cm to {r.half_width_m:g} m" in md
-    assert f"{blind_cone_radius_m():.2f} m" in md
+    assert f"blind cone {blind_cone_radius_m():.2f} m" in md and "path driven" in md
     assert "Ring 3 confidence" not in md          # the features note only with --features
     assert "Ring 3 confidence" in map_legend_markdown(sched, color_by="class",
                                                       blind_cone_m=3.74, features=True)
@@ -506,9 +513,12 @@ def test_rings_are_drawn_as_squares_at_their_half_width(tmp_path, monkeypatch):
         pts = strip.strips.as_arrow_array().to_pylist()[0]
         xy = np.abs(np.array(pts)[:, :2])
         assert len(pts) == 5 and np.allclose(xy, ring.half_width_m)
+    # the car is drawn once, static, as a body and a heading -- not per frame
+    assert [p for p, _ in calls if p in ("world/vehicle/body", "world/vehicle/heading")] == [
+        "world/vehicle/body", "world/vehicle/heading"]
 
 
-def test_side_panels_update_every_frame_and_the_layout_is_sent_once(tmp_path, monkeypatch):
+def test_charts_carry_two_lines_each_and_the_table_updates_every_frame(tmp_path, monkeypatch):
     import rerun as rr
     from vrgrid.dash.pipeline_view import PipelineView
     from vrgrid.run.engine import MapEngine
@@ -518,7 +528,8 @@ def test_side_panels_update_every_frame_and_the_layout_is_sent_once(tmp_path, mo
     monkeypatch.setattr(rr, "send_blueprint", lambda bp, **kw: (sent.append(bp), real_send(bp, **kw)))
     sched = load_schedule("5/10/20/40")
     engine = MapEngine(sched, ghost_removal=True)
-    view = PipelineView(sched, spawn=False, save_path=str(tmp_path / "ui.rrd"), engine=engine)
+    view = PipelineView(sched, spawn=False, save_path=str(tmp_path / "ui.rrd"), engine=engine,
+                        map_interval=2)
     calls = _spy_logs(monkeypatch)
     for i in range(3):
         f = _wall_frame(i)
@@ -529,11 +540,17 @@ def test_side_panels_update_every_frame_and_the_layout_is_sent_once(tmp_path, mo
         return sum(1 for p, _ in calls if p == path)
 
     assert len(sent) == 1
-    for path in ("panel/status", "stats/frame_ms/perception", "stats/frame_ms/engine",
-                 "stats/frame_ms/dashboard", "stats/frame_ms/total", "stats/frame_ms/budget",
-                 "stats/ghosts/cleared", "stats/ghosts/spared", "stats/ghosts/truncated"):
+    for path in ("panel/status", "stats/frame_ms/total", "stats/frame_ms/budget",
+                 "stats/ghosts/cleared", "stats/ghosts/spared"):
         assert count(path) == 3, path
-    assert view._totals["truncated"] == 0
+    stats = {p for p, _ in calls if p.startswith("stats/")}
+    assert stats == {"stats/frame_ms/total", "stats/frame_ms/budget",
+                     "stats/ghosts/cleared", "stats/ghosts/spared"}       # two lines a chart
+    assert view._run["n"] == 3 and view._run["truncated"] == 0
+    assert view._run["perception"] == 180.0 and view._run["peak_occupied"] > 0
+    assert count("world/trajectory") == 1          # frames 0 and 2 redraw; frame 0 has 1 point
 
-    view.log_frame(_wall_frame(3))           # no counters or timing: still no blank panel
-    assert count("panel/status") == 4 and count("stats/frame_ms/perception") == 3
+    view.log_frame(_wall_frame(3))           # no counters or timing: still no blank table
+    assert count("panel/status") == 4 and count("stats/frame_ms/total") == 3
+    view.finish()
+    assert count("world/trajectory") == 2

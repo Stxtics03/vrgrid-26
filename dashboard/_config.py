@@ -190,95 +190,116 @@ def memory_overlay_markdown(n_occupied: int, schedule) -> str:
     ])
 
 
-def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_removal: bool,
-                    counters=None, totals: dict | None = None, frame_ms: float | None = None,
-                    ground_method: str | None = None, has_map: bool = True) -> str:
-    """The "Live" side panel: what a judge should be able to read off the screen
-    at any frame. Logged every frame, so it is never blank between map redraws.
 
-    The memory rows are the report's figures, derived here rather than typed:
-    live storage (`n_occupied * CELL_BYTES`), the fixed allocation it can never
-    exceed, and that allocation against the uniform-2.5D and dense-3D baselines
-    -- the same two ratios `scripts/memory_table.py` prints. `counters` is a
-    `StepCounters`; `totals` sums them over the run.
+def _ms(v) -> str:
+    return "—" if v is None else f"{v:.0f} ms"
+
+
+def _rate(ms) -> str:
+    return "—" if not ms else f"{ms:.0f} ms · {1e3 / ms:.1f} fps"
+
+
+def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_removal: bool,
+                    counters=None, run: dict | None = None, timing_ms: dict | None = None,
+                    ground_method: str | None = None, has_map: bool = True) -> str:
+    """The "Key numbers" side panel: this frame beside the whole run so far.
+
+    Everything a judge might ask about sits here in one table instead of on
+    five overlapping chart lines: frame time and fps against the budget, the
+    three stages that make it up, ghost cells removed / kept by the guard /
+    skipped by the candidate cap, and map memory now against its peak. Below
+    it, the memory claim, derived from the schedule exactly as
+    `scripts/memory_table.py` derives it.
+
+    `counters` is this frame's `StepCounters`; `timing_ms` this frame's
+    `{"perception", "engine", "dashboard", "total"}`; `run` the view's running
+    sums (`n` timed frames, the same four timings, `cleared` / `protected` /
+    `truncated`, `peak_occupied`). Any of them may be None and shows as "—".
     """
-    base_cm = f"{schedule.base_cell_m * 100:g} cm"
-    rows = [f"**Frame {frame_index:,}**", "", "| | |", "|---|---|"]
-    if has_map:
-        alloc = schedule.total_cells * CELL_BYTES
-        uniform = uniform_2_5d_baseline(schedule)["bytes"]
-        dense = dense_3d_baseline(schedule)["bytes"]
+    budget = frame_budget_ms()
+    ground = ("" if not ground_method else
+              " · ground Patchwork++" if ground_method == "patchworkpp" else
+              " · ⚑ ground: semantic-class fallback")
+    rows = [
+        (f"**Frame {frame_index:,}** · ghost removal {'ON' if ghost_removal else 'OFF'}{ground}"
+         f" · budget {budget:.0f} ms per frame"),
+        "",
+        "| | this frame | whole run |",
+        "|---|---|---|",
+    ]
+    t = timing_ms or {}
+    n = (run or {}).get("n", 0)
+
+    def avg(key):
+        return run[key] / n if run and n else None
+
+    rows.append(f"| **Frame time** | **{_rate(t.get('total'))}** | {_rate(avg('total'))} |")
+    for key, label in (("perception", "perception"), ("engine", "map engine"),
+                       ("dashboard", "dashboard")):
+        rows.append(f"| {label} | {_ms(t.get(key))} | {_ms(avg(key))} |")
+
+    if not has_map:
+        rows.append("| Map | back end off (`--no-map`) | |")
+        return "\n".join(rows)
+
+    def now(key):
+        return "—" if counters is None else f"{int(getattr(counters, key)):,}"
+
+    def total(key):
+        return "—" if run is None else f"{int(run[key]):,}"
+
+    if ghost_removal:
+        capped = run is not None and run["truncated"] > 0
         rows += [
-            (f"| **Map memory now** | **{_fmt_bytes(int(n_occupied) * CELL_BYTES)}** · "
-             f"{int(n_occupied):,} occupied cells |"),
-            (f"| Fixed allocation | {_fmt_bytes(alloc)} · {schedule.total_cells:,} cells, "
-             "never grows |"),
-            (f"| vs uniform {base_cm} 2.5D | {_fmt_bytes(uniform)} · "
-             f"**{uniform / alloc:.1f}× smaller** |"),
-            f"| vs dense {base_cm} 3D | {_fmt_bytes(dense)} · **{dense / alloc:,.0f}× smaller** |",
+            f"| **Ghost cells removed** | **{now('cleared')}** | {total('cleared')} |",
+            f"| kept by the guard | {now('protected')} | {total('protected')} |",
+            (f"| skipped by the cap{' ⚑' if capped else ''} | {now('truncated')} | "
+             f"{total('truncated')} |"),
         ]
-        if not ghost_removal:
-            rows.append("| Ghost removal | **OFF** · trails stay in the map |")
-        elif counters is not None:
-            rows.append(f"| Ghost removal | ON · {counters.cleared:,} cleared, "
-                        f"{counters.protected:,} spared this frame |")
-        else:
-            rows.append("| Ghost removal | ON |")
-        if ghost_removal and totals is not None:
-            flag = "" if totals["truncated"] == 0 else " ⚑ cap hit"
-            rows.append(f"| Run totals | {totals['cleared']:,} cleared · "
-                        f"{totals['protected']:,} spared · {totals['truncated']:,} truncated{flag} |")
     else:
-        rows.append("| Map | back end off (`--no-map`) |")
-    if frame_ms:
-        budget = frame_budget_ms()
-        verdict = "within" if frame_ms <= budget else "over"
-        rows.append(f"| Frame time | {frame_ms:.0f} ms · {1e3 / frame_ms:.1f} fps · "
-                    f"{verdict} the {budget:.0f} ms budget |")
-    if ground_method:
-        ground = "Patchwork++" if ground_method == "patchworkpp" else "⚑ semantic-class fallback"
-        rows.append(f"| Ground | {ground} |")
+        rows.append("| Ghost cells removed | off | off |")
+    peak = max(int((run or {}).get("peak_occupied", 0)), int(n_occupied))
+    rows.append(f"| **Map memory** | **{_fmt_bytes(int(n_occupied) * CELL_BYTES)}** | "
+                f"peak {_fmt_bytes(peak * CELL_BYTES)} |")
+
+    alloc = schedule.total_cells * CELL_BYTES
+    uniform = uniform_2_5d_baseline(schedule)["bytes"]
+    dense = dense_3d_baseline(schedule)["bytes"]
+    base = f"{schedule.base_cell_m * 100:g} cm"
+    rows += [
+        "",
+        "| Memory claim | |",
+        "|---|---|",
+        f"| Fixed allocation | {_fmt_bytes(alloc)} · never grows |",
+        f"| Uniform {base} 2.5D | {_fmt_bytes(uniform)} · **{uniform / alloc:.1f}× more** |",
+        f"| Dense {base} 3D | {_fmt_bytes(dense)} · **{dense / alloc:,.0f}× more** |",
+    ]
     return "\n".join(rows)
 
 
 def map_legend_markdown(schedule, *, color_by: str, blind_cone_m: float,
-                        palette_legend: str | None = None, features: bool = False,
+                        palette_note: str | None = None, features: bool = False,
                         feature_interval: int = 20) -> str:
-    """The "Legend" side panel: the colour key and each ring's cell size, read
-    from the schedule. Logged once, static. Replaces the long instructions
-    document, which read as developer notes on a demo screen."""
-    rows = [
-        # Rings first, as one line: they are the foveation claim, and at demo
-        # resolution the panel shows about eight lines before it has to scroll.
-        "**Rings** (squares) · " + " · ".join(
+    """The legend strip under the map: two or three wrapped lines, logged once.
+
+    A strip rather than a side panel so the side column holds the numbers and
+    the charts, and so the key sits right beside the thing it explains. Ring
+    sizes come from the schedule; nothing here is typed by hand.
+    """
+    points = f"points coloured by `{color_by}`" + (f" ({palette_note})" if palette_note else "")
+    lines = [
+        "**Rings** (squares around the car) · " + " · ".join(
             f"{r.cell_m * 100:g} cm to {r.half_width_m:g} m" for r in schedule.rings),
-        "",
-        "| colour | means |",
-        "|---|---|",
-        "| blue → orange | occupied, by height |",
-        "| slate | free · seen and clear |",
-        "| violet | unknown · never free |",
-        f"| red circle | blind cone {blind_cone_m:.2f} m |",
-        "| red dots | moving (ghosts) |",
-        "",
-        "**Map** · one point per cell, sized to its ring",
+        ("**Colours** · blue → orange: occupied, by height · slate: free, seen and clear · "
+         "violet: unknown, never free · "
+         f"red circle: blind cone {blind_cone_m:.2f} m · red dots: moving (ghosts) · "
+         f"amber line: path driven · {points}"),
     ]
-    rows += ["", f"**Point cloud** · coloured by `{color_by}`"]
-    if palette_legend:
-        rows += ["", palette_legend]
     if features:
-        rows += [
-            "",
-            f"**Features** · §7.4 / §7.5, refreshed every {feature_interval} frames",
-            "",
-            "| colour | meaning |",
-            "|---|---|",
-            "| orange boxes | curbs, standing at their measured height |",
-            "| vermillion boxes | potholes, sunk to their measured depth |",
-            "| dark → light points | drivability confidence, none → full |",
-            "",
-            ("⚑ Ring 3 confidence reads 0 on the live path: beyond ~50 m SemanticKITTI is "
-             "unlabelled, and `run/engine.py` stores unlabelled as class 0 (`car`). Dark there "
-             "means unlabelled, not hazardous."),
-        ]
-    return "\n".join(rows)
+        lines.append(
+            f"**Features** (refreshed every {feature_interval} frames) · orange boxes: curbs at "
+            "their measured height · vermillion boxes: potholes at their measured depth · "
+            "dark → light points: drivability confidence. ⚑ Ring 3 confidence reads 0 on the "
+            "live path: beyond ~50 m SemanticKITTI is unlabelled and `run/engine.py` stores "
+            "unlabelled as class 0 (`car`), so dark there means unlabelled, not hazardous.")
+    return "\n\n".join(lines)

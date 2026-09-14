@@ -171,17 +171,25 @@ def _confidence_ramp(c: np.ndarray) -> np.ndarray:
 # collapsed. Expand the left panel for the eye icons -- `world/ghosts` is still
 # the point-cloud ghost toggle.
 #
-# Series colours are Okabe-Ito, the palette the CVD audit already covers.
+# Two lines per chart, no more. Five overlapping lines with a legend box over
+# the data read as noise on a projector; the per-stage split and the cap count
+# live in the Key numbers table instead, and each chart title names its line
+# colours so no legend box is needed. Okabe-Ito colours, which the CVD audit
+# already covers.
 _SERIES = {
-    "stats/frame_ms/perception": ("perception", (86, 180, 233)),
-    "stats/frame_ms/engine": ("map engine", (0, 158, 115)),
-    "stats/frame_ms/dashboard": ("dashboard", (230, 159, 0)),
-    "stats/frame_ms/total": ("total", (235, 235, 235)),
-    "stats/frame_ms/budget": ("budget (10 Hz)", (213, 94, 0)),
-    "stats/ghosts/cleared": ("cleared", (0, 158, 115)),
-    "stats/ghosts/spared": ("spared by the guard", (86, 180, 233)),
-    "stats/ghosts/truncated": ("truncated (must stay 0)", (213, 94, 0)),
+    "stats/frame_ms/total": ("frame time", (235, 235, 235)),
+    "stats/frame_ms/budget": ("budget", (213, 94, 0)),
+    "stats/ghosts/cleared": ("removed", (0, 158, 115)),
+    "stats/ghosts/spared": ("kept by the guard", (86, 180, 233)),
 }
+
+# The car, drawn under the vehicle transform. Display only -- roughly KITTI's
+# recording car, a VW Passat estate (~4.8 x 1.8 x 1.5 m). The vehicle frame's
+# origin is on the ground, so the box sits on it.
+_CAR_HALF_SIZE_M = (2.4, 0.9, 0.75)
+_CAR_RGB = (40, 200, 90)
+_HEADING_RGB = (240, 228, 66)
+_TRAIL_RGB = (240, 180, 60)
 
 
 def _demo_blueprint():
@@ -197,15 +205,27 @@ def _demo_blueprint():
                                        look_target=[20.0, 0.0, 0.0],
                                        tracking_entity="/world/vehicle"),
     )
-    side = rrb.Vertical(
-        rrb.TextDocumentView(name="Live", origin="/panel/status"),
-        rrb.TimeSeriesView(name="Frame time (ms)", origin="/stats/frame_ms"),
-        rrb.TimeSeriesView(name="Ghost removal (cells per frame)", origin="/stats/ghosts"),
+    map_column = rrb.Vertical(
+        map_view,
         rrb.TextDocumentView(name="Legend", origin="/panel/legend"),
-        row_shares=[5, 3, 3, 4],
+        row_shares=[6, 1],
+    )
+    no_legend = rrb.PlotLegend(visible=False)     # the titles name the colours
+    # Frame time on a fixed 0 .. 3x budget axis. Auto-scaled it started near
+    # 100 ms, which turned ordinary jitter into cliffs and hid how far over or
+    # under the budget line a frame really sits.
+    budget_ms = frame_budget_ms()
+    side = rrb.Vertical(
+        rrb.TextDocumentView(name="Key numbers", origin="/panel/status"),
+        rrb.TimeSeriesView(name="Frame time, ms · white: frame · orange: budget",
+                           origin="/stats/frame_ms", plot_legend=no_legend,
+                           axis_y=rrb.ScalarAxis(range=(0.0, 3.0 * budget_ms))),
+        rrb.TimeSeriesView(name="Ghost cells per frame · green: removed · blue: kept",
+                           origin="/stats/ghosts", plot_legend=no_legend),
+        row_shares=[6, 3, 3],      # 5 cut the last memory-claim row, the 286x one
     )
     return rrb.Blueprint(
-        rrb.Horizontal(map_view, side, column_shares=[5, 3]),
+        rrb.Horizontal(map_column, side, column_shares=[5, 3]),
         rrb.BlueprintPanel(state="collapsed"),
         rrb.SelectionPanel(state="collapsed"),
         rrb.TimePanel(state="collapsed", timeline="frame", fps=playback_fps()),
@@ -307,18 +327,25 @@ class PipelineView:
         # `Timeline "frame" not found` and the playback rate did not take.
         self._blueprint_sent = False
         self._budget_ms = frame_budget_ms()
-        self._totals = {"cleared": 0, "protected": 0, "truncated": 0}
+        # Running sums behind the "whole run" column of Key numbers.
+        self._run = {"n": 0, "perception": 0.0, "engine": 0.0, "dashboard": 0.0,
+                     "total": 0.0, "cleared": 0, "protected": 0, "truncated": 0,
+                     "peak_occupied": 0}
         self._ground_method = None
+        self._trail = []                       # vehicle positions, for the path driven
+        palette_note = (("SemanticKITTI 19-class colours" if palette == "semantickitti"
+                         else "7 colourblind-safe groups") if color_by == "class" else None)
         rr.log("panel/legend", rr.TextDocument(
             map_legend_markdown(
                 schedule, color_by=color_by, blind_cone_m=blind_cone_radius_m(),
-                palette_legend=legend_markdown(palette) if color_by == "class" else None,
-                features=self.features, feature_interval=FEATURE_INTERVAL),
+                palette_note=palette_note, features=self.features,
+                feature_interval=FEATURE_INTERVAL),
             media_type=rr.MediaType.MARKDOWN), static=True)
         for path, (name, rgb) in _SERIES.items():
-            rr.log(path, rr.SeriesLines(colors=[rgb], names=[name], widths=[2.0]), static=True)
+            rr.log(path, rr.SeriesLines(colors=[rgb], names=[name], widths=[2.5]), static=True)
         self._log_rings(schedule)
         self._log_blind_cone(blind_cone_radius_m())
+        self._log_car()
 
     def _log_rings(self, schedule):
         """Ring boundaries, straight from the passed `Schedule`, drawn as
@@ -582,30 +609,53 @@ class PipelineView:
         except (AttributeError, TypeError):   # a viewer too old for the layout API
             pass
 
+    def _log_car(self):
+        """The vehicle as a car-sized box with a heading arrow, under the
+        vehicle transform -- static, so it costs nothing per frame. A dot said
+        where the car was; this also says which way it is facing."""
+        rr.log("world/vehicle/body",
+               rr.Boxes3D(centers=[[0.0, 0.0, _CAR_HALF_SIZE_M[2]]],
+                          half_sizes=[_CAR_HALF_SIZE_M], colors=[_CAR_RGB], fill_mode="solid"),
+               static=True)
+        rr.log("world/vehicle/heading",
+               rr.Arrows3D(origins=[[0.0, 0.0, 2.0 * _CAR_HALF_SIZE_M[2] + 0.2]],
+                           vectors=[[6.0, 0.0, 0.0]], colors=[_HEADING_RGB], radii=0.15),
+               static=True)
+
+    def _log_trail(self):
+        """The path driven so far, world frame. Redrawn with the map, not every
+        frame: it is one line strip, but it grows with the run."""
+        if len(self._trail) < 2:
+            return
+        rr.log("world/trajectory",
+               rr.LineStrips3D([np.stack(self._trail)], colors=[_TRAIL_RGB], radii=0.12))
+
     def _log_stats(self, frame, counters, timing_ms, dashboard_ms):
-        """The side panels: the frame-time and ghost-removal series and the
-        Live status text. Every frame, so no panel is ever blank between map
-        redraws; the occupied count in it is the last redraw's."""
-        timing = dict(timing_ms or {})
-        timing["dashboard"] = dashboard_ms
-        for stage in ("perception", "engine", "dashboard"):
-            if stage in timing:
-                rr.log(f"stats/frame_ms/{stage}", rr.Scalars(timing[stage]))
-        total = sum(timing.values()) if "perception" in timing else None
-        if total is not None:
-            rr.log("stats/frame_ms/total", rr.Scalars(total))
+        """The side column: two chart series each and the Key numbers table.
+        Every frame, so nothing is ever blank between map redraws; the
+        occupied count in the table is the last redraw's."""
+        timing = None
+        if timing_ms and "perception" in timing_ms:
+            timing = {"perception": timing_ms["perception"],
+                      "engine": timing_ms.get("engine", 0.0), "dashboard": dashboard_ms}
+            timing["total"] = sum(timing.values())
+            rr.log("stats/frame_ms/total", rr.Scalars(timing["total"]))
+            self._run["n"] += 1
+            for key, value in timing.items():
+                self._run[key] += value
         rr.log("stats/frame_ms/budget", rr.Scalars(self._budget_ms))
         if counters is not None:
-            for key in self._totals:
-                self._totals[key] += int(getattr(counters, key))
+            for key in ("cleared", "protected", "truncated"):
+                self._run[key] += int(getattr(counters, key))
             rr.log("stats/ghosts/cleared", rr.Scalars(counters.cleared))
             rr.log("stats/ghosts/spared", rr.Scalars(counters.protected))
-            rr.log("stats/ghosts/truncated", rr.Scalars(counters.truncated))
+        self._run["peak_occupied"] = max(self._run["peak_occupied"], self._last_occupied_n)
+        tracked = self._run["n"] > 0 or counters is not None
         rr.log("panel/status", rr.TextDocument(
             status_markdown(frame.index, self._last_occupied_n, self.schedule,
                             ghost_removal=self.ghost_removal, counters=counters,
-                            totals=self._totals if counters is not None else None,
-                            frame_ms=total, ground_method=self._ground_method,
+                            run=self._run if tracked else None, timing_ms=timing,
+                            ground_method=self._ground_method,
                             has_map=self.engine is not None),
             media_type=rr.MediaType.MARKDOWN))
 
@@ -625,6 +675,7 @@ class PipelineView:
         the run stopped on. Both would otherwise be up to an interval stale."""
         self.log_map()
         self.log_features()
+        self._log_trail()
 
     def log_frame(self, frame, counters=None, timing_ms=None):
         """Draw one frame.
@@ -664,5 +715,9 @@ class PipelineView:
             translation=frame.vehicle_xyz_world.astype(np.float32),
             rotation=rr.RotationAxisAngle(axis=[0, 0, 1], angle=float(yaw)),
         ))
-        rr.log("world/vehicle/marker", rr.Points3D([[0, 0, 0]], colors=[40, 220, 40], radii=0.4))
+        # The path driven. `_frames_logged` was already advanced above, so this
+        # frame is a map-redraw frame when (count - 1) lands on the interval.
+        self._trail.append(np.asarray(frame.vehicle_xyz_world, np.float32))
+        if (self._frames_logged - 1) % self.map_interval == 0:
+            self._log_trail()
         self._log_stats(frame, counters, timing_ms, (time.perf_counter() - t_start) * 1e3)
