@@ -292,7 +292,8 @@ def map_legend_markdown(schedule, *, color_by: str, blind_cone_m: float,
             f"{r.cell_m * 100:g} cm to {r.half_width_m:g} m" for r in schedule.rings),
         ("**Colours** · blue → orange: occupied, by height · slate: free, seen and clear · "
          "violet: unknown, never free · "
-         f"red circle: blind cone {blind_cone_m:.2f} m · red dots: moving (ghosts) · "
+         f"red circle: blind cone {blind_cone_m:.2f} m, the sensor's blind spot right now "
+         "(the map inside it is remembered from earlier frames) · red dots: moving (ghosts) · "
          f"white arrow: the car · amber line: path driven · {points}"),
     ]
     if features:

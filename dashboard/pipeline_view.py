@@ -196,15 +196,19 @@ _MARKER_RGB = (240, 240, 240)
 def _demo_blueprint():
     map_view = rrb.Spatial3DView(
         name="Map",
-        origin="/world",
+        # The view lives in `/world/follow`, a frame that carries the vehicle's
+        # POSITION only (see `log_frame`), and shows everything under /world.
+        # So the camera below is a chase camera that goes where the car goes.
+        # `tracking_entity` with a fixed eye did not follow: by frame 1,000 of
+        # seq 00 the car was 370 m away and the view still sat at the origin.
+        # Position but not heading, on purpose: a camera bolted to the car's
+        # yaw swings on every small heading change between 10 Hz frames.
+        origin="/world/follow",
+        contents="/world/**",
         background=rrb.Background(color=[14, 17, 22]),
         line_grid=rrb.LineGrid3D(visible=False),
-        # A chase camera behind and above the vehicle, following it. Left to
-        # its default, the view frames the whole 200 m outer ring and the car
-        # is a speck in the middle.
         eye_controls=rrb.EyeControls3D(position=[-45.0, -30.0, 40.0],
-                                       look_target=[20.0, 0.0, 0.0],
-                                       tracking_entity="/world/vehicle"),
+                                       look_target=[20.0, 0.0, 0.0]),
     )
     map_column = rrb.Vertical(
         map_view,
@@ -229,7 +233,10 @@ def _demo_blueprint():
         rrb.Horizontal(map_column, side, column_shares=[5, 3]),
         rrb.BlueprintPanel(state="collapsed"),
         rrb.SelectionPanel(state="collapsed"),
-        rrb.TimePanel(state="collapsed", timeline="frame", fps=playback_fps()),
+        # Starts playing and loops, so a scene keeps running unattended for as
+        # long as the demo lasts instead of stopping on its last frame.
+        rrb.TimePanel(state="collapsed", timeline="frame", fps=playback_fps(),
+                      play_state="playing", loop_mode="all"),
     )
 
 
@@ -712,6 +719,11 @@ class PipelineView:
             translation=frame.vehicle_xyz_world.astype(np.float32),
             rotation=rr.RotationAxisAngle(axis=[0, 0, 1], angle=float(yaw)),
         ))
+        # The chase camera's frame: the vehicle's position, no rotation. The map
+        # view's origin (`_demo_blueprint`), so the camera goes where the car goes.
+        rr.log("world/follow", rr.Transform3D(
+            translation=np.asarray(frame.vehicle_xyz_world, np.float32)))
+
         # The path driven. `_frames_logged` was already advanced above, so this
         # frame is a map-redraw frame when (count - 1) lands on the interval.
         self._trail.append(np.asarray(frame.vehicle_xyz_world, np.float32))

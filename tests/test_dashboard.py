@@ -545,7 +545,8 @@ def test_charts_carry_two_lines_each_and_the_table_updates_every_frame(tmp_path,
 
     assert len(sent) == 1
     for path in ("panel/status", "stats/frame_ms/total", "stats/frame_ms/budget",
-                 "stats/ghosts/cleared", "stats/ghosts/spared"):
+                 "stats/ghosts/cleared", "stats/ghosts/spared",
+                 "world/follow"):              # the chase camera moves every frame
         assert count(path) == 3, path
     stats = {p for p, _ in calls if p.startswith("stats/")}
     assert stats == {"stats/frame_ms/total", "stats/frame_ms/budget",
