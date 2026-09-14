@@ -358,6 +358,10 @@ def real_scans(sequence: str, max_frames=None, start_frame: int = 0,
     from vrgrid.perception import ground, loader, semantics, transforms
 
     t_s_v = transforms.sensor_to_vehicle()
+    # Fresh Patchwork++ state per sequence: it adapts from past scans, so a
+    # batch over several sequences in one process otherwise ran every sequence
+    # after the first on the previous one's thresholds (ground.reset_estimator).
+    ground.reset_estimator()
     for pts, labels, pose in loader.scans(sequence, max_frames=max_frames,
                                           start_frame=start_frame):
         vehicle_pts = transforms.transform_points(pts[:, :3], t_s_v)

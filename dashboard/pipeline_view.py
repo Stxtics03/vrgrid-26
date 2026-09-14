@@ -27,17 +27,24 @@ Ring boundaries and the blind cone are logged under the vehicle transform, so
 they track the vehicle. Points are world-frame and accumulate on the timeline.
 """
 
+import time
+
 import numpy as np
 import rerun as rr
-from vrgrid.cell import OCC_FREE, OCC_UNKNOWN
+import rerun.blueprint as rrb
+from vrgrid.cell import CELL_BYTES, OCC_FREE, OCC_UNKNOWN
 from vrgrid.grid.confidence import drivable_confidence
 from vrgrid.grid.features import detect
 
 from ._config import (
     blind_cone_radius_m,
-    memory_overlay_markdown,
-    schedule_legend_markdown,
+    details_markdown,
+    frame_budget_ms,
+    map_legend_markdown,
+    playback_fps,
+    status_markdown,
 )
+from .gpu_stats import GpuSampler
 
 # Every colour below is defined in `palettes.py`, which imports no rerun: the
 # CVD audit (`cvd.py`) and tests/test_cvd.py check these numbers in CI, where
@@ -64,12 +71,30 @@ _HEIGHT_STOPS = np.array(
 )
 
 
-def _height_ramp(z: np.ndarray, lo: float = -3.0, hi: float = 15.0) -> np.ndarray:
-    """(N, 3) uint8 colour per cell from its world-z, clipped to [lo, hi]."""
+def _height_ramp_exact(z: np.ndarray, lo: float, hi: float) -> np.ndarray:
     t = np.clip((np.asarray(z, np.float32) - lo) / (hi - lo), 0.0, 1.0) * 3.0
     i = np.clip(t.astype(np.int64), 0, 2)
     f = (t - i)[:, None]
     return (_HEIGHT_STOPS[i] * (1.0 - f) + _HEIGHT_STOPS[i + 1] * f).astype(np.uint8)
+
+
+# The ramp, evaluated once at 1,024 heights over the fixed band: 1.8 cm a step,
+# below what one uint8 colour channel can show. Interpolating ~180,000 cells per
+# map redraw was 12 ms of the 34 ms `_log_occupied` took (profiled, seq 00);
+# a table lookup is one index cast and one gather.
+_HEIGHT_LUT_N = 1024
+_HEIGHT_LO_M, _HEIGHT_HI_M = -3.0, 15.0
+_HEIGHT_LUT = _height_ramp_exact(
+    np.linspace(_HEIGHT_LO_M, _HEIGHT_HI_M, _HEIGHT_LUT_N), _HEIGHT_LO_M, _HEIGHT_HI_M)
+
+
+def _height_ramp(z: np.ndarray, lo: float = _HEIGHT_LO_M, hi: float = _HEIGHT_HI_M) -> np.ndarray:
+    """(N, 3) uint8 colour per cell from its world-z, clipped to [lo, hi]."""
+    if (lo, hi) != (_HEIGHT_LO_M, _HEIGHT_HI_M):
+        return _height_ramp_exact(z, lo, hi)
+    idx = (np.asarray(z, np.float32) - lo) * ((_HEIGHT_LUT_N - 1) / (hi - lo)) + 0.5
+    np.clip(idx, 0, _HEIGHT_LUT_N - 1, out=idx)
+    return _HEIGHT_LUT[idx.astype(np.intp)]
 
 
 # Occupancy layers are drawn as three visually distinct things -- "unknown is
@@ -99,6 +124,27 @@ _UNKNOWN_RGBA = (150, 90, 160, 90)    # muted violet, matches the blind-cone "un
 # taken from.
 FEATURE_INTERVAL = 20
 
+# --- viewer frame rate -------------------------------------------------------
+#
+# The dense map layers (occupied / free / unknown / confidence) are drawn as
+# `Points3D` sized to the cell, not `Boxes3D`, and redrawn every `MAP_INTERVAL`
+# frames rather than every frame. Both are about the viewer, not the map:
+#
+#   * Rerun processes box instances one at a time on the CPU; points and
+#     spheres take a GPU fast path the Rerun team puts at ~100x faster
+#     (rerun-io/rerun#10276, which names voxel occupancy grids as the case).
+#     Seq 00 has ~205,000 map cells a frame, which is where playback stalled.
+#     A point of radius cell/2 still steps 5 -> 10 -> 20 -> 40 cm with range,
+#     so the foveation reads exactly as it did.
+#   * Resending every cell every frame is also most of the live-run overhead:
+#     the pipeline is 81 ms p50, a live scene ~220 ms. The map changes slowly
+#     and Rerun holds the last value between logs, so the point cloud, ghosts
+#     and vehicle stay at the full frame rate while the map refreshes at 2 Hz.
+#
+# `finish()` redraws once after the loop so a run that stops between intervals
+# still ends on the true final map -- the frame a still gets taken from.
+MAP_INTERVAL = 5
+
 _CURB_RGBA = (230, 159, 0, 235)       # Okabe-Ito orange -- a positive step, drawn standing up
 _POTHOLE_RGBA = (213, 94, 0, 245)     # Okabe-Ito vermillion -- a negative one, drawn sunken
 
@@ -117,6 +163,110 @@ def _confidence_ramp(c: np.ndarray) -> np.ndarray:
     i = np.clip(t.astype(np.int64), 0, 2)
     f = (t - i)[:, None]
     return (_CONFIDENCE_STOPS[i] * (1.0 - f) + _CONFIDENCE_STOPS[i + 1] * f).astype(np.uint8)
+
+
+# --- the demo layout -----------------------------------------------------------
+#
+# One fixed layout, saved into every recording, so a baked scene opens the same
+# way on any machine: two map views on the left (the whole map from above, and
+# a follow camera close behind the car), and on the right two tabs -- "Live"
+# (numbers, GPU chart, ghost chart, status feed) and "Details" (the memory
+# comparison, measured results and legend, which never change). The entity tree
+# and selection panel are collapsed; expand the left panel for the eye icons --
+# `world/ghosts` is still the point-cloud ghost toggle.
+#
+# Two lines per chart, no more. Five overlapping lines with a legend box over
+# the data read as noise on a projector; frame time and memory are numbers in
+# the Live table instead, and each chart title names its line colours so no
+# legend box is needed. Okabe-Ito colours, which the CVD audit already covers.
+_SERIES = {
+    "stats/ghosts/cleared": ("removed", (0, 158, 115)),
+    "stats/ghosts/spared": ("kept by the guard", (86, 180, 233)),
+    "stats/gpu_pct/usage": ("GPU usage", (0, 158, 115)),
+    "stats/gpu_pct/memory": ("GPU memory", (204, 121, 167)),
+}
+
+# The status feed: one coloured line per map-redraw window. Okabe-Ito green /
+# yellow / vermillion, the same family as everything else on screen. "Near" is a
+# display threshold for colouring a line, not a map threshold.
+_FEED_OK_RGB = (0, 158, 115)
+_FEED_WARN_RGB = (240, 228, 66)
+_FEED_BAD_RGB = (213, 94, 0)
+_FEED_NEAR_BUDGET = 0.8
+
+_TRAIL_RGB = (240, 180, 60)
+
+# The vehicle marker: one flat white triangle pointing along +x (forward),
+# 3.2 m long and 2 m wide, lifted 25 cm so it sits on top of the ground cells.
+# A map-style "you are here" arrow -- position and heading, nothing else.
+_MARKER_Z_M = 0.25
+_MARKER_VERTS_M = [[2.0, 0.0, _MARKER_Z_M], [-1.2, 1.0, _MARKER_Z_M], [-1.2, -1.0, _MARKER_Z_M]]
+_MARKER_RGB = (240, 240, 240)
+
+
+def _demo_blueprint(schedule):
+    # Both map views live in `/world/follow`, a frame that carries the vehicle's
+    # POSITION only (see `log_frame`), and show everything under /world. So both
+    # cameras go where the car goes. `tracking_entity` with a fixed eye did not
+    # follow: by frame 1,000 of seq 00 the car was 370 m away and the view still
+    # sat at the origin. Position but not heading, on purpose: a camera bolted
+    # to the car's yaw swings on every small heading change between 10 Hz frames.
+    def map_view(name, position, look_target):
+        return rrb.Spatial3DView(
+            name=name, origin="/world/follow", contents="/world/**",
+            background=rrb.Background(color=[14, 17, 22]),
+            line_grid=rrb.LineGrid3D(visible=False),
+            eye_controls=rrb.EyeControls3D(position=position, look_target=look_target))
+
+    maps = rrb.Vertical(
+        # High and nearly straight down: the whole 200 m map, all four rings.
+        map_view("Overview · the whole map, all four rings", [-20.0, 0.0, 150.0], [0.0, 0.0, 0.0]),
+        # Low behind the car: the fine 5 cm ring up close.
+        map_view("Around the car · follow camera", [-30.0, -18.0, 22.0], [15.0, 0.0, 0.0]),
+        row_shares=[1, 1],
+    )
+
+    no_legend = rrb.PlotLegend(visible=False)     # the titles name the colours
+    live = rrb.Vertical(
+        rrb.TextDocumentView(name="Live numbers", origin="/panel/status"),
+        rrb.TimeSeriesView(name="GPU rendering % · green usage · pink memory",
+                           origin="/stats/gpu_pct", plot_legend=no_legend,
+                           axis_y=rrb.ScalarAxis(range=(0.0, 100.0))),
+        rrb.TimeSeriesView(name="Ghost cells per frame · green removed · blue kept",
+                           origin="/stats/ghosts", plot_legend=no_legend),
+        # Body only: each line already names its frames, the path is always
+        # /panel/feed, and the colour already says green / yellow / red.
+        rrb.TextLogView(
+            name="Status feed", origin="/panel/feed",
+            columns=rrb.archetypes.TextLogColumns(
+                timeline_columns=[rrb.components.TimelineColumn("frame", visible=False)],
+                text_log_columns=[
+                    rrb.components.TextLogColumn("LogLevel", visible=False),
+                    rrb.components.TextLogColumn("EntityPath", visible=False),
+                    rrb.components.TextLogColumn("Body", visible=True),
+                ],
+            ),
+        ),
+        row_shares=[3.6, 2, 2, 2],     # 3 cut the table's last row (Map memory)
+        name="Live",
+    )
+    # What never changes while the demo plays, on its own tab so the Live tab
+    # can stay roomy instead of packing three tables above the charts.
+    details = rrb.Vertical(
+        rrb.TextDocumentView(name="Memory and results", origin="/panel/details"),
+        rrb.TextDocumentView(name="Legend", origin="/panel/legend"),
+        row_shares=[1.5, 1],       # 1:1 cut the Measured table; the legend had room to spare
+        name="Details",
+    )
+    return rrb.Blueprint(
+        rrb.Horizontal(maps, rrb.Tabs(live, details, active_tab=0), column_shares=[3, 2]),
+        rrb.BlueprintPanel(state="collapsed"),
+        rrb.SelectionPanel(state="collapsed"),
+        # Starts playing and loops, so a scene keeps running unattended for as
+        # long as the demo lasts instead of stopping on its last frame.
+        rrb.TimePanel(state="collapsed", timeline="frame", fps=playback_fps(),
+                      play_state="playing", loop_mode="all"),
+    )
 
 
 def legend_markdown(palette: str) -> str:
@@ -187,8 +337,11 @@ def get_display_points(frame, ghost_removal: bool, color_by: str = "class",
 class PipelineView:
     def __init__(self, schedule, spawn: bool = False, save_path: str | None = None,
                  color_by: str = "class", ghost_removal: bool = True,
-                 palette: str = "semantickitti", engine=None, features: bool = False):
+                 palette: str = "semantickitti", engine=None, features: bool = False,
+                 map_interval: int = MAP_INTERVAL):
         self.color_by = color_by
+        # Frames between map redraws -- see MAP_INTERVAL. 1 draws every frame.
+        self.map_interval = max(1, int(map_interval))
         self.ghost_removal = ghost_removal
         self.palette = palette
         self.schedule = schedule
@@ -201,61 +354,100 @@ class PipelineView:
         # `features.detect` costs 1,137 ms -- see FEATURE_INTERVAL.
         self.features = bool(features) and engine is not None
         self._frames_logged = 0
-        rr.init("vrgrid_pipeline", spawn=spawn)
-        if save_path:
-            rr.save(save_path)
+        # Both a live viewer and a file: log to both at once. `rr.save` on its
+        # own replaces the viewer connection, so a --viz --save run used to
+        # record without rendering -- and the GPU chart then recorded an idle
+        # GPU. Rendering while recording is what gives that chart its meaning.
+        self.rendering_live = bool(spawn)
+        if spawn and save_path:
+            rr.init("vrgrid_pipeline", spawn=False)
+            # 40%, not Rerun's 75% default: on the 15 GB demo laptop the default
+            # outgrew free RAM and the OS watchdog killed the run. The viewer
+            # drops its oldest frames at the cap; the file sink keeps them all.
+            rr.spawn(connect=False, memory_limit="40%")
+            rr.set_sinks(rr.GrpcSink(), rr.FileSink(save_path))
+        else:
+            rr.init("vrgrid_pipeline", spawn=spawn)
+            if save_path:
+                rr.save(save_path)
 
         rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
-        rr.log(
-            "instructions",
-            rr.TextDocument(
-                "Ghost toggle: show/hide the `world/ghosts` entity (eye icon in the "
-                "entity panel).\nvisible = ghost removal OFF (trails behind moving "
-                "objects)\nhidden  = ghost removal ON\n\n"
-                "Map occupancy (when a MapEngine is attached), math §10.1:\n"
-                "  `world/map/occupied`  raised solid boxes, coloured by height\n"
-                "  `world/map/free`      flat translucent slate tiles -- looked, clear\n"
-                "  `world/map/unknown`   observed-but-still-unknown cells + the blind "
-                "cone; never-observed cells are not drawn.\n"
-                "Unknown is not free -- they are separate entities on purpose.\n\n"
-                "With `--features` (math §7.4, §7.5):\n"
-                "  `world/map/curbs`      orange boxes standing at the measured rise\n"
-                "  `world/map/potholes`   vermillion boxes sunk to the measured depth\n"
-                "  `world/map/confidence` flat tiles above the surface, dark = no "
-                "confidence in drivability, light = full.\n"
-                "These recompute every 20 frames, not every frame: the detector is a "
-                "full-window pass and costs ~1.1 s.\n\n"
-                "⚑ KNOWN BUG, ring 3 confidence: every ring-3 tile reads a FALSE "
-                "0.000. Beyond ~50 m SemanticKITTI has no labels (100% of returns "
-                "in the 50-100 m band on seq 00), and `run/engine.py` maps "
-                "unlabelled to class 0 = `car`, which is not drivable. So ring 3 "
-                "is dark because it is UNLABELLED, not because it is hazardous. "
-                "Live-map path only -- the published per-ring / rho tables use "
-                "`eval/harness.py`, which maps unlabelled to CLASS_UNLABELLED and "
-                "is correct.",
-                media_type=rr.MediaType.MARKDOWN,
-            ),
-            static=True,
-        )
-        rr.log("legend", rr.TextDocument(legend_markdown(palette),
-                                         media_type=rr.MediaType.MARKDOWN), static=True)
-        rr.log("schedules", rr.TextDocument(schedule_legend_markdown(schedule.name),
-                                            media_type=rr.MediaType.MARKDOWN), static=True)
+        # The layout goes out with the first frame (`_send_blueprint`), once the
+        # `frame` timeline exists. Sent here, before any data, the viewer logged
+        # `Timeline "frame" not found` and the playback rate did not take.
+        self._blueprint_sent = False
+        self._budget_ms = frame_budget_ms()
+        # Running sums behind the "whole run" column of Key numbers.
+        self._run = {"n": 0, "perception": 0.0, "engine": 0.0, "dashboard": 0.0,
+                     "total": 0.0, "cleared": 0, "protected": 0, "truncated": 0,
+                     "peak_occupied": 0, "gpu_peak_pct": None}
+        self._alloc_mb = schedule.total_cells * CELL_BYTES / 1e6
+        # The status feed accumulates one map-redraw window of frames per line.
+        self._feed_window = []                 # [(frame index, total ms), ...]
+        self._feed_cleared = 0
+        self._ground_method = None
+        self._trail = []                       # vehicle positions, for the path driven
+        palette_note = (("SemanticKITTI 19-class colours" if palette == "semantickitti"
+                         else "7 colourblind-safe groups") if color_by == "class" else None)
+        rr.log("panel/legend", rr.TextDocument(
+            map_legend_markdown(
+                schedule, color_by=color_by, blind_cone_m=blind_cone_radius_m(),
+                palette_note=palette_note, features=self.features,
+                feature_interval=FEATURE_INTERVAL),
+            media_type=rr.MediaType.MARKDOWN), static=True)
+        rr.log("panel/details", rr.TextDocument(details_markdown(schedule),
+                                                media_type=rr.MediaType.MARKDOWN), static=True)
+        for path, (name, rgb) in _SERIES.items():
+            rr.log(path, rr.SeriesLines(colors=[rgb], names=[name], widths=[2.5]), static=True)
         self._log_rings(schedule)
         self._log_blind_cone(blind_cone_radius_m())
+        self._log_marker()
+
+        # GPU telemetry, polled off the frame path (gpu_stats.py). The first two
+        # feed lines say what the map is given and what draws it.
+        self._gpu = GpuSampler()
+        # Static data on an entity replaces everything else logged there, so each
+        # start-up line gets its own path and the per-frame lines another again.
+        rr.log("panel/feed/startup/alloc", rr.TextLog(
+            f"map allocated once at startup: {self._alloc_mb:.2f} MB · "
+            f"{schedule.total_cells:,} cells · never grows",
+            level=rr.TextLogLevel.INFO, color=_FEED_OK_RGB), static=True)
+        gpu = self._gpu.latest()
+        rr.log("panel/feed/startup/gpu", rr.TextLog(
+            (f"GPU: {gpu.name} · {gpu.mem_total_mib / 1024:.1f} GB · "
+             + ("usage recorded while rendering this run live" if self.rendering_live
+                else "usage recorded while baking, no viewer rendering")
+             if gpu is not None else "GPU telemetry unavailable (no NVIDIA GPU / nvidia-smi)"),
+            level=rr.TextLogLevel.INFO if gpu is not None else rr.TextLogLevel.WARN,
+            color=_FEED_OK_RGB if gpu is not None else _FEED_WARN_RGB), static=True)
+
+    def _log_marker(self):
+        """The vehicle as a small flat arrow under the vehicle transform, so it
+        moves and turns with the car. Static: one triangle, logged once. The
+        vertices wind counter-clockwise seen from above, so it faces up."""
+        rr.log("world/vehicle/marker",
+               rr.Mesh3D(vertex_positions=_MARKER_VERTS_M, triangle_indices=[[0, 1, 2]],
+                         albedo_factor=_MARKER_RGB),
+               static=True)
 
     def _log_rings(self, schedule):
-        """Ring-boundary circles, straight from the passed `Schedule`. The ring
-        half-widths and cell sizes come from `configs/schedule_*.yaml` via
-        `grid.schedule.load` -- nothing here is hardcoded, and this draws the
-        same rings the engine bins into."""
+        """Ring boundaries, straight from the passed `Schedule`, drawn as
+        SQUARES. Ring membership is the L-infinity distance in the vehicle
+        frame (`lattice.ring_of`, math §6.1 eq. 18), so ring 0 reaches 10 m
+        along the axes and 14.1 m at its corners; the circles drawn here before
+        showed the wrong boundary exactly where foveation is meant to be seen.
+        Logged under the vehicle transform, so they turn with the heading, as
+        membership does. Half-widths and cell sizes come from
+        `configs/schedule_*.yaml` -- nothing here is hardcoded."""
         for ring in schedule.rings:
             hw = ring.half_width_m
-            th = np.linspace(0, 2 * np.pi, 129)
-            strip = np.stack([hw * np.cos(th), hw * np.sin(th), np.zeros_like(th)], axis=1)
+            square = np.array([[hw, hw, 0], [-hw, hw, 0], [-hw, -hw, 0],
+                               [hw, -hw, 0], [hw, hw, 0]], dtype=np.float32)
             rr.log(
                 f"world/vehicle/rings/ring_{ring.ring}_{ring.cell_m * 100:g}cm",
-                rr.LineStrips3D([strip.astype(np.float32)], colors=[220, 220, 220], radii=0.04),
+                # No in-scene label: four labels plus the blind cone's piled up
+                # on top of each other at the vehicle. The Legend lists them.
+                rr.LineStrips3D([square], colors=[200, 205, 212], radii=0.05),
                 static=True,
             )
 
@@ -264,14 +456,13 @@ class PipelineView:
         strip = np.stack([radius_m * np.cos(th), radius_m * np.sin(th), np.zeros_like(th)], axis=1)
         rr.log(
             "world/vehicle/blind_cone",
-            rr.LineStrips3D([strip.astype(np.float32)], colors=[230, 60, 60], radii=0.05,
-                            labels=[f"blind cone {radius_m:.2f} m (unknown, never free)"]),
+            rr.LineStrips3D([strip.astype(np.float32)], colors=[230, 60, 60], radii=0.05),
             static=True,
         )
 
     def _cell_m_per_slot(self, slots: np.ndarray) -> np.ndarray:
         """Cell edge length (m) for each occupied slot, from the ring it lives
-        in. This is what makes the foveation visible: a box drawn at a cell's
+        in. This is what makes the foveation visible: a point drawn at a cell's
         own size grows from 5 cm near the vehicle to 40 cm at 100 m."""
         out = np.full(len(slots), self.engine.sched.base_cell_m, dtype=np.float32)
         for layout in self.engine.handle.rings:
@@ -292,7 +483,8 @@ class PipelineView:
 
     def _log_occupied(self):
         """The real 2.5D occupied surface: every cell the map currently calls
-        OCCUPIED, drawn as a box at its world xy, at its visibility height z
+        OCCUPIED, drawn as a point of radius cell/2 at its world xy, at its
+        visibility height z
         (ceiling where one was seen, ground otherwise -- the same height §10.4
         tests), sized to its ring's cell. `--show-ghosts` keeps the moving
         car's cells here; the default clears them via §10.4, so this entity is
@@ -307,19 +499,15 @@ class PipelineView:
             return
         cell_m = self._cell_m_per_slot(slots)
         centres = np.stack([x, y, z], axis=1).astype(np.float32)
-        half = np.stack(
-            [cell_m / 2.0, cell_m / 2.0, np.full_like(cell_m, 0.02)], axis=1
-        ).astype(np.float32)
         rr.log(
             "world/map/occupied",
-            rr.Boxes3D(centers=centres, half_sizes=half,
-                       colors=_height_ramp(z), fill_mode="solid"),
+            rr.Points3D(centres, radii=cell_m / 2.0, colors=_height_ramp(z)),
         )
 
     def _log_free(self):
-        """FREE cells -- observed and clear -- as flat translucent tiles at the
-        ground datum, sized to their ring's cell so the foveation still reads.
-        Distinct from OCCUPIED (which is solid and raised) and from UNKNOWN
+        """FREE cells -- observed and clear -- as translucent slate points at
+        the ground datum, sized to their ring's cell so the foveation still
+        reads. Distinct from OCCUPIED (height-coloured) and from UNKNOWN
         (undrawn / blind cone): "looked and clear" is not "did not look"."""
         free = np.flatnonzero(self.engine.occ_state == OCC_FREE)
         if len(free) == 0:
@@ -328,13 +516,9 @@ class PipelineView:
         x, y, z = self._centres_world(free)
         cell_m = self._cell_m_per_slot(free)
         centres = np.stack([x, y, z], axis=1).astype(np.float32)
-        half = np.stack(
-            [cell_m / 2.0, cell_m / 2.0, np.full_like(cell_m, 0.01)], axis=1
-        ).astype(np.float32)
         rr.log(
             "world/map/free",
-            rr.Boxes3D(centers=centres, half_sizes=half,
-                       colors=[_FREE_RGBA], fill_mode="solid"),
+            rr.Points3D(centres, radii=cell_m / 2.0, colors=[_FREE_RGBA]),
         )
 
     def _log_unknown(self):
@@ -352,13 +536,9 @@ class PipelineView:
         x, y, z = self._centres_world(seen_unknown)
         cell_m = self._cell_m_per_slot(seen_unknown)
         centres = np.stack([x, y, z], axis=1).astype(np.float32)
-        half = np.stack(
-            [cell_m / 2.0, cell_m / 2.0, np.full_like(cell_m, 0.01)], axis=1
-        ).astype(np.float32)
         rr.log(
             "world/map/unknown",
-            rr.Boxes3D(centers=centres, half_sizes=half,
-                       colors=[_UNKNOWN_RGBA], fill_mode="solid"),
+            rr.Points3D(centres, radii=cell_m / 2.0, colors=[_UNKNOWN_RGBA]),
         )
 
     def _ring_slices(self):
@@ -470,7 +650,7 @@ class PipelineView:
           flagged rather than fixed. A dark ring-3 tile in a recording made
           before that fix means "unlabelled beyond 50 m", not "hazard".
         """
-        cent, cols, half = [], [], []
+        cent, cols, rad = [], [], []
         for level, (sl, side) in enumerate(self._ring_slices()):
             cell_m = self.engine.sched.rings[level].cell_m
             conf = drivable_confidence(self.engine.handle.grid, sl, side, cell_m,
@@ -481,16 +661,15 @@ class PipelineView:
             x, y, z = self._centres_world(seen + self.engine.handle.rings[level].offset)
             cent.append(np.stack([x, y, z + 0.15], axis=1))
             cols.append(_confidence_ramp(conf[seen]))
-            half.append(np.stack([np.full(seen.size, cell_m / 2.0),
-                                  np.full(seen.size, cell_m / 2.0),
-                                  np.full(seen.size, 0.01)], axis=1))
+            rad.append(np.full(seen.size, cell_m / 2.0, np.float32))
         if not cent:
             rr.log("world/map/confidence", rr.Clear(recursive=True))
             return
+        # Points, like the occupancy layers and for the same reason (see
+        # MAP_INTERVAL): this layer covers every observed cell.
         rr.log("world/map/confidence",
-               rr.Boxes3D(centers=np.concatenate(cent).astype(np.float32),
-                          half_sizes=np.concatenate(half).astype(np.float32),
-                          colors=np.concatenate(cols), fill_mode="solid"))
+               rr.Points3D(np.concatenate(cent).astype(np.float32),
+                           radii=np.concatenate(rad), colors=np.concatenate(cols)))
 
     def log_features(self):
         """Recompute and draw the §7.4 / §7.5 layers. ~1.2 s -- see
@@ -505,30 +684,134 @@ class PipelineView:
         self._log_potholes(holes)
         self._log_confidence()
 
-    def _log_memory(self):
-        """Per-frame live memory overlay: the real occupied-cell storage now
-        (`occupied count * CELL_BYTES`), the dense-3D baseline derived from the
-        schedule for the same covered volume, and the live ratio. Logged
-        alongside the static `schedules` panel, but updated every frame."""
-        rr.log(
-            "memory",
-            rr.TextDocument(
-                memory_overlay_markdown(self._last_occupied_n, self.schedule),
-                media_type=rr.MediaType.MARKDOWN,
-            ),
-        )
+    def _send_blueprint(self):
+        """The demo layout (`_demo_blueprint`), sent once with the first frame."""
+        self._blueprint_sent = True
+        try:
+            rr.send_blueprint(_demo_blueprint(self.schedule))
+        except (AttributeError, TypeError):   # a viewer too old for the layout API
+            pass
 
-    def log_frame(self, frame):
+    def _log_trail(self):
+        """The path driven so far, world frame. Redrawn with the map, not every
+        frame: it is one line strip, but it grows with the run."""
+        if len(self._trail) < 2:
+            return
+        rr.log("world/trajectory",
+               rr.LineStrips3D([np.stack(self._trail)], colors=[_TRAIL_RGB], radii=0.12))
+
+    def _log_stats(self, frame, counters, timing_ms, dashboard_ms):
+        """The Live tab: its two charts and its numbers table. Every frame, so
+        nothing is ever blank between map redraws; the occupied count in the
+        table is the last redraw's."""
+        timing = None
+        if timing_ms and "perception" in timing_ms:
+            timing = {"perception": timing_ms["perception"],
+                      "engine": timing_ms.get("engine", 0.0), "dashboard": dashboard_ms}
+            timing["total"] = sum(timing.values())
+            self._run["n"] += 1
+            for key, value in timing.items():
+                self._run[key] += value
+        if counters is not None:
+            for key in ("cleared", "protected", "truncated"):
+                self._run[key] += int(getattr(counters, key))
+            rr.log("stats/ghosts/cleared", rr.Scalars(counters.cleared))
+            rr.log("stats/ghosts/spared", rr.Scalars(counters.protected))
+        self._run["peak_occupied"] = max(self._run["peak_occupied"], self._last_occupied_n)
+
+        # GPU: the sampler's latest snapshot, never a blocking call on this path.
+        gpu = self._gpu.latest()
+        if gpu is not None:
+            rr.log("stats/gpu_pct/usage", rr.Scalars(gpu.util_pct))
+            rr.log("stats/gpu_pct/memory", rr.Scalars(gpu.mem_pct))
+            peak = self._run["gpu_peak_pct"]
+            self._run["gpu_peak_pct"] = gpu.util_pct if peak is None else max(peak, gpu.util_pct)
+
+        self._log_feed(frame, counters, timing)
+        tracked = self._run["n"] > 0 or counters is not None
+        rr.log("panel/status", rr.TextDocument(
+            status_markdown(frame.index, self._last_occupied_n, self.schedule,
+                            ghost_removal=self.ghost_removal, counters=counters,
+                            run=self._run if tracked else None, timing_ms=timing,
+                            ground_method=self._ground_method,
+                            has_map=self.engine is not None, gpu=gpu),
+            media_type=rr.MediaType.MARKDOWN))
+
+    def _log_feed(self, frame, counters, timing):
+        """One coloured status line per map-redraw window, plus an immediate red
+        line whenever the candidate cap skips cells (a ghost could then persist).
+
+        Green: every frame in the window within 80% of the budget. Yellow: the
+        worst frame within the budget. Red: over it. Frames with no timing do
+        not form windows, so a caller that passes none gets no feed lines."""
+        if counters is not None and counters.truncated:
+            rr.log("panel/feed/alerts", rr.TextLog(
+                f"frame {frame.index:,}: candidate cap skipped {counters.truncated:,} cells",
+                level=rr.TextLogLevel.ERROR, color=_FEED_BAD_RGB))
+        if timing is None:
+            return
+        self._feed_window.append((frame.index, timing["total"]))
+        if counters is not None:
+            self._feed_cleared += int(counters.cleared)
+        if len(self._feed_window) < self.map_interval:
+            return
+        totals = [ms for _, ms in self._feed_window]
+        worst, avg = max(totals), sum(totals) / len(totals)
+        if worst <= _FEED_NEAR_BUDGET * self._budget_ms:
+            verdict, level, rgb = "within budget", rr.TextLogLevel.INFO, _FEED_OK_RGB
+        elif worst <= self._budget_ms:
+            verdict, level, rgb = "near budget", rr.TextLogLevel.WARN, _FEED_WARN_RGB
+        else:
+            verdict, level, rgb = "over budget", rr.TextLogLevel.ERROR, _FEED_BAD_RGB
+        ghosts = (f" · {self._feed_cleared:,} ghost cells removed"
+                  if self.ghost_removal and counters is not None else "")
+        rr.log("panel/feed/frames", rr.TextLog(
+            f"frames {self._feed_window[0][0]:,}–{self._feed_window[-1][0]:,} · "
+            f"avg {avg:.0f} ms · worst {worst:.0f} ms · {verdict}{ghosts}",
+            level=level, color=rgb))
+        self._feed_window.clear()
+        self._feed_cleared = 0
+
+    def log_map(self):
+        """Draw the occupancy layers at the current time. Called every
+        `map_interval` frames by `log_frame`, and once more by `finish()`.
+        No-op without an engine."""
+        if self.engine is None:
+            return
+        self._log_occupied()   # also refreshes engine.occ_state
+        self._log_free()
+        self._log_unknown()
+
+    def finish(self):
+        """Call once after the loop: redraws the map and the §7.4 / §7.5
+        layers so the recording ends on the true final state, whichever frame
+        the run stopped on. Both would otherwise be up to an interval stale."""
+        self.log_map()
+        self.log_features()
+        self._log_trail()
+        self._gpu.stop()
+
+    def log_frame(self, frame, counters=None, timing_ms=None):
+        """Draw one frame.
+
+        `counters` is what `MapEngine.step` returned for this frame, and
+        `timing_ms` the caller's `{"perception": ms, "engine": ms}` for it.
+        Both are optional: with them the side panels show live frame time and
+        ghost-removal numbers; without them, what the view can know alone.
+        """
+        t_start = time.perf_counter()
         rr.set_time("frame", sequence=frame.index)
+        if not self._blueprint_sent:
+            self._send_blueprint()
+        self._ground_method = getattr(frame, "ground_method", self._ground_method)
 
         xyz, colors = get_display_points(frame, self.ghost_removal, self.color_by, self.palette)
         rr.log("world/points", rr.Points3D(xyz, colors=colors, radii=0.03))
 
         if self.engine is not None:
-            self._log_occupied()   # also refreshes engine.occ_state
-            self._log_free()
-            self._log_unknown()
-            self._log_memory()
+            # Not every frame -- see MAP_INTERVAL. `finish()` draws the last.
+            if self._frames_logged % self.map_interval == 0:
+                self.log_map()
             # Not every frame: `features.detect` is 1,137 ms. The caller runs
             # one more pass after the loop so the final state is complete.
             if self.features and self._frames_logged % FEATURE_INTERVAL == 0:
@@ -546,4 +829,14 @@ class PipelineView:
             translation=frame.vehicle_xyz_world.astype(np.float32),
             rotation=rr.RotationAxisAngle(axis=[0, 0, 1], angle=float(yaw)),
         ))
-        rr.log("world/vehicle/marker", rr.Points3D([[0, 0, 0]], colors=[40, 220, 40], radii=0.4))
+        # The chase camera's frame: the vehicle's position, no rotation. The map
+        # view's origin (`_demo_blueprint`), so the camera goes where the car goes.
+        rr.log("world/follow", rr.Transform3D(
+            translation=np.asarray(frame.vehicle_xyz_world, np.float32)))
+
+        # The path driven. `_frames_logged` was already advanced above, so this
+        # frame is a map-redraw frame when (count - 1) lands on the interval.
+        self._trail.append(np.asarray(frame.vehicle_xyz_world, np.float32))
+        if (self._frames_logged - 1) % self.map_interval == 0:
+            self._log_trail()
+        self._log_stats(frame, counters, timing_ms, (time.perf_counter() - t_start) * 1e3)

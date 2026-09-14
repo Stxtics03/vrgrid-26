@@ -18,6 +18,7 @@ cloud instead (for a "raw pipeline output" view with nothing to toggle).
 """
 
 import argparse
+import time
 
 
 def main(argv=None) -> None:
@@ -68,14 +69,19 @@ def main(argv=None) -> None:
                         palette=args.palette, engine=engine, features=args.features)
     n = 0
     ground_method = None
+    t_pull = time.perf_counter()
     for frame in iter_pipeline(args.seq, args.frames, use_patchworkpp=not args.no_patchworkpp,
                                start_frame=args.start_frame):
+        t_frame = time.perf_counter()          # the pull above was perception
         ground_method = frame.ground_method
-        if engine is not None:
-            engine.step(frame)
-        view.log_frame(frame)
+        counters = engine.step(frame) if engine is not None else None
+        t_step = time.perf_counter()
+        view.log_frame(frame, counters=counters,
+                       timing_ms={"perception": (t_frame - t_pull) * 1e3,
+                                  "engine": (t_step - t_frame) * 1e3})
         n += 1
-    view.log_features()   # final state; no-op unless --features
+        t_pull = time.perf_counter()
+    view.finish()   # final map + features state, whichever frame the run ended on
     start = f" from frame {args.start_frame}" if args.start_frame else ""
     print(f"{n} frames from sequence {args.seq}{start}"
           + (f" -> {args.save}" if args.save else ""))
