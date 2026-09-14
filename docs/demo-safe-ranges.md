@@ -1,12 +1,5 @@
 # Demo frame ranges — seq 00 / 07 / 08
 
-> ⚠️ **OBSOLETE as of 2026-09-13 — Rerun has been removed from the project.**
-> `scripts/demo.sh`, the `dashboard/` package and every `.rrd` recording this
-> document depends on are gone, so none of the commands below run. It is kept
-> rather than deleted because it is the clearest record of what the demo showed
-> and in what order, which is what anyone designing the replacement needs. Do
-> not follow it as instructions.
-
 *Perception front-end + dashboard. A shot list for the live demo: which frames
 to drive for each thing worth showing.*
 

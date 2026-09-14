@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = ["numpy>=1.24", "pyyaml>=6.0"]
 
 [project.optional-dependencies]
+dash = ["rerun-sdk>=0.16"]
 # Patchwork++ ground segmentation. A C++ extension -- install locally with
 # `pip install -e ".[perception]"`. PyPI has prebuilt wheels for CPython
 # 3.8-3.13 on: win_amd64, win32, manylinux/musllinux x86_64 + i686, and
@@ -39,7 +40,7 @@ report = ["matplotlib>=3.7"]
 # The repo is laid out by OWNER (src/grid = Aakash, src/gpu = Shrestha, ...) so
 # that two people rarely touch the same file. These mappings make that layout
 # importable as one `vrgrid` package, so the documented commands work:
-#   python -m vrgrid.run
+#   python -m vrgrid.run    python -m vrgrid.dash
 [tool.setuptools]
 packages = [
     "vrgrid",
@@ -48,6 +49,7 @@ packages = [
     "vrgrid.gpu",
     "vrgrid.perception",
     "vrgrid.run",
+    "vrgrid.dash",
     "vrgrid.adapters",
 ]
 
@@ -58,6 +60,7 @@ packages = [
 "vrgrid.gpu" = "src/gpu"
 "vrgrid.perception" = "src/perception"
 "vrgrid.run" = "src/run"
+"vrgrid.dash" = "dashboard"
 "vrgrid.adapters" = "adapters"
 
 [tool.pytest.ini_options]

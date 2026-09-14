@@ -19,10 +19,8 @@ then the map back end, in `engine.MapEngine` (see that file for the order):
 
     bin -> scatter -> fuse -> visibility cleanup -> shift
 
-⚑ THE RERUN DASHBOARD IS GONE. `--viz`, `--save`, `--color-by`, `--palette`
-and `--features` went with it; this entry point is the pipeline, not a viewer.
-Nothing in the mapping path ever imported rerun -- the dashboard was reached
-only under `--viz`/`--save` -- so removing it changes no map output.
+The dashboard (`--viz` / `--save`) renders the real per-frame output, replacing
+the Day-0 synthetic plane/boxes/slope one layer at a time via `--color-by`.
 
 ⚑ `--show-ghosts` is the Gate 3 toggle and it now drives BOTH halves: the
   viewer keeps the moving returns in the main cloud, AND the map stops running
@@ -151,6 +149,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--frames", type=int, default=None, help="stop after N frames")
     p.add_argument("--start-frame", type=int, default=0,
                    help="start from this frame index (default 0); --frames counts from here")
+    p.add_argument("--viz", action="store_true", help="open the Rerun dashboard")
+    p.add_argument("--save", default=None, help="write a Rerun .rrd recording here")
+    p.add_argument(
+        "--color-by",
+        default="class",
+        choices=["intensity", "class", "motion", "ground", "reflectivity"],
+        help="how the dashboard colours the point cloud",
+    )
     p.add_argument("--show-ghosts", action="store_true",
                    help="Gate 3 toggle OFF: keep moving points in the main cloud "
                         "and stop running the map's visibility cleanup, so ghost "
@@ -161,7 +167,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="clip semantic ids to 15 so fusion's 4-bit candidate "
                         "accepts them (math §10.2). Corrupts the class layer; "
                         "the real fix is the 5/3 split, a room decision")
+    p.add_argument("--palette", default="semantickitti", choices=["semantickitti", "groups"],
+                   help="class colours: the 19-class standard, or 7 colourblind-safe groups")
     p.add_argument("--no-patchworkpp", action="store_true", help="use the semantic-class ground proxy")
+    p.add_argument("--features", action="store_true",
+                   help="dashboard: draw the curb/pothole (math 7.4) and confidence "
+                        "(7.5) layers. Recomputed every 20 frames, not every frame -- "
+                        "the detector is a full-window pass and costs ~1.1 s")
     return p
 
 
@@ -180,6 +192,18 @@ def main(argv=None) -> int:
         print(f"map: {engine.handle.allocated_slots:,} slots preallocated, "
               f"ghost removal {'OFF' if args.show_ghosts else 'ON'}")
 
+    view = None
+    if args.viz or args.save:
+        from vrgrid.dash.pipeline_view import PipelineView
+
+        # `engine` is passed so the dashboard draws the map's occupied cells as
+        # the real 2.5D surface, not just the point cloud -- this is what makes
+        # `--show-ghosts` visibly change the screen (Gate 3).
+        view = PipelineView(sched, spawn=args.viz, save_path=args.save,
+                            color_by=args.color_by, ghost_removal=not args.show_ghosts,
+                            palette=args.palette, engine=engine,
+                            features=args.features)
+
     n, cleared, protected = 0, 0, 0
     truncated_frames, truncated_peak = 0, 0
     ground_method = None
@@ -193,6 +217,8 @@ def main(argv=None) -> int:
             if counters.truncated:
                 truncated_frames += 1
                 truncated_peak = max(truncated_peak, counters.truncated)
+        if view is not None:
+            view.log_frame(frame)
         n += 1
         if n % 20 == 0:
             msg = f"  frame {frame.index}: {len(frame.points_sensor):,} pts"
@@ -201,6 +227,8 @@ def main(argv=None) -> int:
                         f"{counters.cleared:,} cleared, {counters.protected:,} protected")
             print(msg)
 
+    if view is not None:
+        view.log_features()   # final state; no-op unless --features
     print(f"done: {n} frames, sequence {args.seq}")
     if ground_method == "semantic_fallback":
         print("[!] ground: SEMANTIC-CLASS FALLBACK, not Patchwork++ -- every "
@@ -227,6 +255,8 @@ def main(argv=None) -> int:
         elif cleared or protected:
             print("  visibility cap held on every frame: the whole occupied "
                   "set was tested.")
+    if args.save:
+        print(f"recording written to {args.save}")
     return 0
 
 
