@@ -595,6 +595,19 @@ class _FakeGpu:
         pass
 
 
+@pytest.fixture(autouse=True)
+def _no_gpu_polling_thread(monkeypatch):
+    """No real `nvidia-smi` poller in any dashboard test.
+
+    `PipelineView` starts one, and only `finish()` stops it. Eight tests here
+    build a view and never finish it, so their daemon threads kept calling
+    nvidia-smi for the rest of the session -- and the allocation tests
+    (tracemalloc traces every thread) counted those calls as allocation inside
+    the frame loop, failing only in a full run. The sampler itself is covered
+    by tests/test_gpu_stats.py."""
+    monkeypatch.setattr("vrgrid.dash.pipeline_view.GpuSampler", lambda: _FakeGpu(None))
+
+
 def test_gpu_reading_reaches_its_chart_and_the_live_table(tmp_path, monkeypatch):
     from vrgrid.dash._config import status_markdown
     from vrgrid.dash.gpu_stats import GpuReading
