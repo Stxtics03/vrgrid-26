@@ -218,8 +218,12 @@ PEDESTRIAN_MOTION_RANGE_M = 25
 
 def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_removal: bool,
                     counters=None, run: dict | None = None, timing_ms: dict | None = None,
-                    ground_method: str | None = None, has_map: bool = True) -> str:
+                    ground_method: str | None = None, has_map: bool = True,
+                    gpu=None) -> str:
     """The side panel, laid out after the SIH26053 deck: three short tables.
+
+    `gpu` is a `gpu_stats.GpuReading` or None; with one, the Live table gains a
+    row for the GPU drawing the dashboard (usage and memory now, peak usage).
 
     1. Live -- this frame beside the whole run: frame time against the budget,
        ghost cells removed / kept by the guard / skipped by the cap, map memory.
@@ -248,6 +252,12 @@ def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_remova
     n = (run or {}).get("n", 0)
     avg_total = run["total"] / n if run and n else None
     rows.append(f"| **Frame time** | **{_rate(t.get('total'))}** | {_rate(avg_total)} |")
+    if gpu is not None:
+        peak = (run or {}).get("gpu_peak_pct")
+        rows.append(
+            f"| GPU · {gpu.name.replace('NVIDIA GeForce ', '')} | {gpu.util_pct:.0f}% · "
+            f"{gpu.mem_used_mib / 1024:.1f} / {gpu.mem_total_mib / 1024:.1f} GB | "
+            + ("—" if peak is None else f"peak {peak:.0f}%") + " |")
 
     if not has_map:
         rows.append("| Map | back end off (`--no-map`) | |")

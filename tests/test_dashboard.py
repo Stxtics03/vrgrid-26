@@ -541,6 +541,8 @@ def test_charts_carry_two_lines_each_and_the_table_updates_every_frame(tmp_path,
     engine = MapEngine(sched, ghost_removal=True)
     view = PipelineView(sched, spawn=False, save_path=str(tmp_path / "ui.rrd"), engine=engine,
                         map_interval=2)
+    view._gpu.stop()
+    view._gpu = _FakeGpu(None)           # machine-independent: no GPU for this test
     calls = _spy_logs(monkeypatch)
     for i in range(3):
         f = _wall_frame(i)
@@ -557,7 +559,13 @@ def test_charts_carry_two_lines_each_and_the_table_updates_every_frame(tmp_path,
         assert count(path) == 3, path
     stats = {p for p, _ in calls if p.startswith("stats/")}
     assert stats == {"stats/frame_ms/total", "stats/frame_ms/budget",
-                     "stats/ghosts/cleared", "stats/ghosts/spared"}       # two lines a chart
+                     "stats/ghosts/cleared", "stats/ghosts/spared",
+                     "stats/memory_mb/in_use", "stats/memory_mb/allocation"}  # no GPU: no GPU lines
+    memory = [a for p, a in calls if p == "stats/memory_mb/allocation"]
+    assert len(memory) == 3
+    # map_interval=2 over 3 timed frames: one full window, so exactly one feed line
+    feed = [a for p, a in calls if p == "panel/feed/frames"]
+    assert len(feed) == 1 and isinstance(feed[0], rr.TextLog)
     assert view._run["n"] == 3 and view._run["truncated"] == 0
     assert view._run["perception"] == 180.0 and view._run["peak_occupied"] > 0
     assert count("world/trajectory") == 1          # frames 0 and 2 redraw; frame 0 has 1 point
@@ -566,3 +574,88 @@ def test_charts_carry_two_lines_each_and_the_table_updates_every_frame(tmp_path,
     assert count("panel/status") == 4 and count("stats/frame_ms/total") == 3
     view.finish()
     assert count("world/trajectory") == 2
+
+
+class _FakeGpu:
+    """Stands in for gpu_stats.GpuSampler so tests do not depend on the machine."""
+
+    def __init__(self, reading):
+        self._reading = reading
+
+    def latest(self):
+        return self._reading
+
+    def stop(self):
+        pass
+
+
+def test_gpu_reading_reaches_its_chart_and_the_live_table(tmp_path, monkeypatch):
+    from vrgrid.dash._config import status_markdown
+    from vrgrid.dash.gpu_stats import GpuReading
+    from vrgrid.dash.pipeline_view import PipelineView
+    from vrgrid.run.engine import MapEngine
+
+    reading = GpuReading("NVIDIA GeForce RTX 4050 Laptop GPU", 37.0, 1536.0, 6141.0)
+    sched = load_schedule("5/10/20/40")
+    engine = MapEngine(sched, ghost_removal=True)
+    view = PipelineView(sched, spawn=False, save_path=str(tmp_path / "gpu.rrd"), engine=engine)
+    view._gpu.stop()
+    view._gpu = _FakeGpu(reading)
+    calls = _spy_logs(monkeypatch)
+    f = _wall_frame(0)
+    view.log_frame(f, counters=engine.step(f), timing_ms={"perception": 60.0, "engine": 40.0})
+
+    paths = [p for p, _ in calls]
+    assert paths.count("stats/gpu_pct/usage") == 1 and paths.count("stats/gpu_pct/memory") == 1
+    assert view._run["gpu_peak_pct"] == 37.0
+    md = status_markdown(1, 10, sched, ghost_removal=True, run=view._run, gpu=reading)
+    assert "| GPU · RTX 4050 Laptop GPU | 37% · 1.5 / 6.0 GB | peak 37% |" in md
+    assert "GPU ·" not in status_markdown(1, 10, sched, ghost_removal=True)   # no reading, no row
+
+
+def test_feed_line_colour_follows_the_worst_frame_in_its_window(tmp_path, monkeypatch):
+    import rerun as rr
+    from vrgrid.dash.pipeline_view import (
+        _FEED_BAD_RGB,
+        _FEED_OK_RGB,
+        _FEED_WARN_RGB,
+        PipelineView,
+    )
+
+    sched = load_schedule("5/10/20/40")
+    view = PipelineView(sched, spawn=False, save_path=str(tmp_path / "feed.rrd"), map_interval=2)
+    view._gpu.stop()
+    view._gpu = _FakeGpu(None)
+    calls = _spy_logs(monkeypatch)
+    frame = _wall_frame(0)
+    for perception in (10.0, 10.0,     # window 1: well within 100 ms -> green
+                       10.0, 85.0,     # window 2: worst ~85 ms, near -> yellow
+                       10.0, 150.0):   # window 3: worst over budget -> red
+        view.log_frame(frame, timing_ms={"perception": perception, "engine": 0.0})
+
+    lines = [a for p, a in calls if p == "panel/feed/frames"]
+    assert len(lines) == 3
+    colours = []
+    for line in lines:
+        packed = int(line.color.as_arrow_array().to_pylist()[0])
+        colours.append(((packed >> 24) & 255, (packed >> 16) & 255, (packed >> 8) & 255))
+    assert colours == [_FEED_OK_RGB, _FEED_WARN_RGB, _FEED_BAD_RGB]
+    assert isinstance(lines[2], rr.TextLog)
+
+
+def test_startup_feed_lines_do_not_overwrite_each_other_or_the_frame_lines(tmp_path, monkeypatch):
+    """Static data on an entity replaces everything else logged there. Both
+    start-up lines on one path showed only the last, and hid every per-frame
+    line behind it -- so each kind of line gets its own entity."""
+    from vrgrid.dash.pipeline_view import PipelineView
+
+    calls = _spy_logs(monkeypatch)
+    view = PipelineView(load_schedule("5/10/20/40"), spawn=False,
+                        save_path=str(tmp_path / "startup.rrd"), map_interval=1)
+    view._gpu.stop()
+    feed_paths = [p for p, _ in calls if p.startswith("panel/feed")]
+    assert sorted(feed_paths) == ["panel/feed/startup/alloc", "panel/feed/startup/gpu"]
+    view._gpu = _FakeGpu(None)
+    view.log_frame(_wall_frame(0), timing_ms={"perception": 10.0, "engine": 0.0})
+    assert [p for p, _ in calls if p == "panel/feed/frames"] == ["panel/feed/frames"]
+    assert not [p for p, _ in calls if p == "panel/feed"]          # nothing on the bare path

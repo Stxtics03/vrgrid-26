@@ -32,7 +32,7 @@ import time
 import numpy as np
 import rerun as rr
 import rerun.blueprint as rrb
-from vrgrid.cell import OCC_FREE, OCC_UNKNOWN
+from vrgrid.cell import CELL_BYTES, OCC_FREE, OCC_UNKNOWN
 from vrgrid.grid.confidence import drivable_confidence
 from vrgrid.grid.features import detect
 
@@ -43,6 +43,7 @@ from ._config import (
     playback_fps,
     status_markdown,
 )
+from .gpu_stats import GpuSampler
 
 # Every colour below is defined in `palettes.py`, which imports no rerun: the
 # CVD audit (`cvd.py`) and tests/test_cvd.py check these numbers in CI, where
@@ -181,7 +182,19 @@ _SERIES = {
     "stats/frame_ms/budget": ("budget", (213, 94, 0)),
     "stats/ghosts/cleared": ("removed", (0, 158, 115)),
     "stats/ghosts/spared": ("kept by the guard", (86, 180, 233)),
+    "stats/memory_mb/in_use": ("map memory in use", (86, 180, 233)),
+    "stats/memory_mb/allocation": ("fixed allocation", (230, 159, 0)),
+    "stats/gpu_pct/usage": ("GPU usage", (0, 158, 115)),
+    "stats/gpu_pct/memory": ("GPU memory", (204, 121, 167)),
 }
+
+# The status feed: one coloured line per map-redraw window. Okabe-Ito green /
+# yellow / vermillion, the same family as everything else on screen. "Near" is a
+# display threshold for colouring a line, not a map threshold.
+_FEED_OK_RGB = (0, 158, 115)
+_FEED_WARN_RGB = (240, 228, 66)
+_FEED_BAD_RGB = (213, 94, 0)
+_FEED_NEAR_BUDGET = 0.8
 
 _TRAIL_RGB = (240, 180, 60)
 
@@ -193,7 +206,7 @@ _MARKER_VERTS_M = [[2.0, 0.0, _MARKER_Z_M], [-1.2, 1.0, _MARKER_Z_M], [-1.2, -1.
 _MARKER_RGB = (240, 240, 240)
 
 
-def _demo_blueprint():
+def _demo_blueprint(schedule):
     map_view = rrb.Spatial3DView(
         name="Map",
         # The view lives in `/world/follow`, a frame that carries the vehicle's
@@ -210,24 +223,57 @@ def _demo_blueprint():
         eye_controls=rrb.EyeControls3D(position=[-45.0, -30.0, 40.0],
                                        look_target=[20.0, 0.0, 0.0]),
     )
+    # Under the map, side by side: the static legend and the coloured status feed.
     map_column = rrb.Vertical(
         map_view,
-        rrb.TextDocumentView(name="Legend", origin="/panel/legend"),
-        row_shares=[6, 1],
+        rrb.Horizontal(
+            rrb.TextDocumentView(name="Legend", origin="/panel/legend"),
+            # Body only: each line already names its frames, the path is always
+            # /panel/feed, and the colour already says green / yellow / red.
+            # With every column showing, the strip had room for one line.
+            rrb.TextLogView(
+                name="Status feed", origin="/panel/feed",
+                columns=rrb.archetypes.TextLogColumns(
+                    timeline_columns=[rrb.components.TimelineColumn("frame", visible=False)],
+                    text_log_columns=[
+                        rrb.components.TextLogColumn("LogLevel", visible=False),
+                        rrb.components.TextLogColumn("EntityPath", visible=False),
+                        rrb.components.TextLogColumn("Body", visible=True),
+                    ],
+                ),
+            ),
+            column_shares=[1, 1],
+        ),
+        row_shares=[5, 1.8],       # 1.3 showed one feed line
     )
     no_legend = rrb.PlotLegend(visible=False)     # the titles name the colours
     # Frame time on a fixed 0 .. 3x budget axis. Auto-scaled it started near
     # 100 ms, which turned ordinary jitter into cliffs and hid how far over or
     # under the budget line a frame really sits.
     budget_ms = frame_budget_ms()
-    side = rrb.Vertical(
-        rrb.TextDocumentView(name="Key numbers", origin="/panel/status"),
-        rrb.TimeSeriesView(name="Frame time, ms · white: frame · orange: budget",
+    alloc_mb = schedule.total_cells * CELL_BYTES / 1e6
+    charts = rrb.Grid(
+        # Titles fit a quarter-width panel (~26 characters) and name the one
+        # line that is not obvious; the longer "white: ... orange: ..." titles
+        # were truncated exactly where the colours were named.
+        rrb.TimeSeriesView(name="Frame ms · orange = budget",
                            origin="/stats/frame_ms", plot_legend=no_legend,
                            axis_y=rrb.ScalarAxis(range=(0.0, 3.0 * budget_ms))),
-        rrb.TimeSeriesView(name="Ghost cells per frame · green: removed · blue: kept",
+        rrb.TimeSeriesView(name="Ghosts · green = removed",
                            origin="/stats/ghosts", plot_legend=no_legend),
-        row_shares=[11, 3, 3],     # three tables (live, memory, measured); 9 cut the last row
+        # Axis to just above the allocation, so "never grows" reads as headroom.
+        rrb.TimeSeriesView(name="Memory MB · orange = cap",
+                           origin="/stats/memory_mb", plot_legend=no_legend,
+                           axis_y=rrb.ScalarAxis(range=(0.0, 1.15 * alloc_mb))),
+        rrb.TimeSeriesView(name="GPU % · pink = memory",
+                           origin="/stats/gpu_pct", plot_legend=no_legend,
+                           axis_y=rrb.ScalarAxis(range=(0.0, 100.0))),
+        grid_columns=2,
+    )
+    side = rrb.Vertical(
+        rrb.TextDocumentView(name="Key numbers", origin="/panel/status"),
+        charts,
+        row_shares=[13, 6],        # three tables above (12 cut the last row), 2x2 charts below
     )
     return rrb.Blueprint(
         rrb.Horizontal(map_column, side, column_shares=[5, 3]),
@@ -338,7 +384,11 @@ class PipelineView:
         # Running sums behind the "whole run" column of Key numbers.
         self._run = {"n": 0, "perception": 0.0, "engine": 0.0, "dashboard": 0.0,
                      "total": 0.0, "cleared": 0, "protected": 0, "truncated": 0,
-                     "peak_occupied": 0}
+                     "peak_occupied": 0, "gpu_peak_pct": None}
+        self._alloc_mb = schedule.total_cells * CELL_BYTES / 1e6
+        # The status feed accumulates one map-redraw window of frames per line.
+        self._feed_window = []                 # [(frame index, total ms), ...]
+        self._feed_cleared = 0
         self._ground_method = None
         self._trail = []                       # vehicle positions, for the path driven
         palette_note = (("SemanticKITTI 19-class colours" if palette == "semantickitti"
@@ -354,6 +404,22 @@ class PipelineView:
         self._log_rings(schedule)
         self._log_blind_cone(blind_cone_radius_m())
         self._log_marker()
+
+        # GPU telemetry, polled off the frame path (gpu_stats.py). The first two
+        # feed lines say what the map is given and what draws it.
+        self._gpu = GpuSampler()
+        # Static data on an entity replaces everything else logged there, so each
+        # start-up line gets its own path and the per-frame lines another again.
+        rr.log("panel/feed/startup/alloc", rr.TextLog(
+            f"map allocated once at startup: {self._alloc_mb:.2f} MB · "
+            f"{schedule.total_cells:,} cells · never grows",
+            level=rr.TextLogLevel.INFO, color=_FEED_OK_RGB), static=True)
+        gpu = self._gpu.latest()
+        rr.log("panel/feed/startup/gpu", rr.TextLog(
+            (f"GPU: {gpu.name} · {gpu.mem_total_mib / 1024:.1f} GB · telemetry via nvidia-smi"
+             if gpu is not None else "GPU telemetry unavailable (no NVIDIA GPU / nvidia-smi)"),
+            level=rr.TextLogLevel.INFO if gpu is not None else rr.TextLogLevel.WARN,
+            color=_FEED_OK_RGB if gpu is not None else _FEED_WARN_RGB), static=True)
 
     def _log_marker(self):
         """The vehicle as a small flat arrow under the vehicle transform, so it
@@ -622,7 +688,7 @@ class PipelineView:
         """The demo layout (`_demo_blueprint`), sent once with the first frame."""
         self._blueprint_sent = True
         try:
-            rr.send_blueprint(_demo_blueprint())
+            rr.send_blueprint(_demo_blueprint(self.schedule))
         except (AttributeError, TypeError):   # a viewer too old for the layout API
             pass
 
@@ -654,14 +720,65 @@ class PipelineView:
             rr.log("stats/ghosts/cleared", rr.Scalars(counters.cleared))
             rr.log("stats/ghosts/spared", rr.Scalars(counters.protected))
         self._run["peak_occupied"] = max(self._run["peak_occupied"], self._last_occupied_n)
+
+        # Memory gauge: storage in use now against the allocation it can never exceed.
+        if self.engine is not None:
+            rr.log("stats/memory_mb/in_use",
+                   rr.Scalars(self._last_occupied_n * CELL_BYTES / 1e6))
+            rr.log("stats/memory_mb/allocation", rr.Scalars(self._alloc_mb))
+
+        # GPU: the sampler's latest snapshot, never a blocking call on this path.
+        gpu = self._gpu.latest()
+        if gpu is not None:
+            rr.log("stats/gpu_pct/usage", rr.Scalars(gpu.util_pct))
+            rr.log("stats/gpu_pct/memory", rr.Scalars(gpu.mem_pct))
+            peak = self._run["gpu_peak_pct"]
+            self._run["gpu_peak_pct"] = gpu.util_pct if peak is None else max(peak, gpu.util_pct)
+
+        self._log_feed(frame, counters, timing)
         tracked = self._run["n"] > 0 or counters is not None
         rr.log("panel/status", rr.TextDocument(
             status_markdown(frame.index, self._last_occupied_n, self.schedule,
                             ghost_removal=self.ghost_removal, counters=counters,
                             run=self._run if tracked else None, timing_ms=timing,
                             ground_method=self._ground_method,
-                            has_map=self.engine is not None),
+                            has_map=self.engine is not None, gpu=gpu),
             media_type=rr.MediaType.MARKDOWN))
+
+    def _log_feed(self, frame, counters, timing):
+        """One coloured status line per map-redraw window, plus an immediate red
+        line whenever the candidate cap skips cells (a ghost could then persist).
+
+        Green: every frame in the window within 80% of the budget. Yellow: the
+        worst frame within the budget. Red: over it. Frames with no timing do
+        not form windows, so a caller that passes none gets no feed lines."""
+        if counters is not None and counters.truncated:
+            rr.log("panel/feed/alerts", rr.TextLog(
+                f"frame {frame.index:,}: candidate cap skipped {counters.truncated:,} cells",
+                level=rr.TextLogLevel.ERROR, color=_FEED_BAD_RGB))
+        if timing is None:
+            return
+        self._feed_window.append((frame.index, timing["total"]))
+        if counters is not None:
+            self._feed_cleared += int(counters.cleared)
+        if len(self._feed_window) < self.map_interval:
+            return
+        totals = [ms for _, ms in self._feed_window]
+        worst, avg = max(totals), sum(totals) / len(totals)
+        if worst <= _FEED_NEAR_BUDGET * self._budget_ms:
+            verdict, level, rgb = "within budget", rr.TextLogLevel.INFO, _FEED_OK_RGB
+        elif worst <= self._budget_ms:
+            verdict, level, rgb = "near budget", rr.TextLogLevel.WARN, _FEED_WARN_RGB
+        else:
+            verdict, level, rgb = "over budget", rr.TextLogLevel.ERROR, _FEED_BAD_RGB
+        ghosts = (f" · {self._feed_cleared:,} ghost cells removed"
+                  if self.ghost_removal and counters is not None else "")
+        rr.log("panel/feed/frames", rr.TextLog(
+            f"frames {self._feed_window[0][0]:,}–{self._feed_window[-1][0]:,} · "
+            f"avg {avg:.0f} ms · worst {worst:.0f} ms · {verdict}{ghosts}",
+            level=level, color=rgb))
+        self._feed_window.clear()
+        self._feed_cleared = 0
 
     def log_map(self):
         """Draw the occupancy layers at the current time. Called every
@@ -680,6 +797,7 @@ class PipelineView:
         self.log_map()
         self.log_features()
         self._log_trail()
+        self._gpu.stop()
 
     def log_frame(self, frame, counters=None, timing_ms=None):
         """Draw one frame.
