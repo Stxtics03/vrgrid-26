@@ -293,7 +293,7 @@ def map_legend_markdown(schedule, *, color_by: str, blind_cone_m: float,
         ("**Colours** · blue → orange: occupied, by height · slate: free, seen and clear · "
          "violet: unknown, never free · "
          f"red circle: blind cone {blind_cone_m:.2f} m · red dots: moving (ghosts) · "
-         f"amber line: path driven · {points}"),
+         f"white arrow: the car · amber line: path driven · {points}"),
     ]
     if features:
         lines.append(

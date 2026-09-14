@@ -513,9 +513,13 @@ def test_rings_are_drawn_as_squares_at_their_half_width(tmp_path, monkeypatch):
         pts = strip.strips.as_arrow_array().to_pylist()[0]
         xy = np.abs(np.array(pts)[:, :2])
         assert len(pts) == 5 and np.allclose(xy, ring.half_width_m)
-    # no car model in the scene: the rings and blind cone already mark the vehicle
-    assert not [p for p, _ in calls
-                if p in ("world/vehicle/body", "world/vehicle/heading", "world/vehicle/marker")]
+    # the vehicle is one small flat arrow, logged once -- no car model
+    assert not [p for p, _ in calls if p in ("world/vehicle/body", "world/vehicle/heading")]
+    markers = [a for p, a in calls if p == "world/vehicle/marker"]
+    assert len(markers) == 1 and isinstance(markers[0], rr.Mesh3D)
+    verts = np.array(markers[0].vertex_positions.as_arrow_array().to_pylist())
+    assert verts.shape == (3, 3) and np.ptp(verts[:, 0]) <= 4.0     # small: under 4 m long
+    assert verts[:, 0].argmax() == 0 and np.allclose(verts[0, 1], 0.0)   # the tip points forward
 
 
 def test_charts_carry_two_lines_each_and_the_table_updates_every_frame(tmp_path, monkeypatch):

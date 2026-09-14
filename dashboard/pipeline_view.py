@@ -185,6 +185,13 @@ _SERIES = {
 
 _TRAIL_RGB = (240, 180, 60)
 
+# The vehicle marker: one flat white triangle pointing along +x (forward),
+# 3.2 m long and 2 m wide, lifted 25 cm so it sits on top of the ground cells.
+# A map-style "you are here" arrow -- position and heading, nothing else.
+_MARKER_Z_M = 0.25
+_MARKER_VERTS_M = [[2.0, 0.0, _MARKER_Z_M], [-1.2, 1.0, _MARKER_Z_M], [-1.2, -1.0, _MARKER_Z_M]]
+_MARKER_RGB = (240, 240, 240)
+
 
 def _demo_blueprint():
     map_view = rrb.Spatial3DView(
@@ -339,6 +346,16 @@ class PipelineView:
             rr.log(path, rr.SeriesLines(colors=[rgb], names=[name], widths=[2.5]), static=True)
         self._log_rings(schedule)
         self._log_blind_cone(blind_cone_radius_m())
+        self._log_marker()
+
+    def _log_marker(self):
+        """The vehicle as a small flat arrow under the vehicle transform, so it
+        moves and turns with the car. Static: one triangle, logged once. The
+        vertices wind counter-clockwise seen from above, so it faces up."""
+        rr.log("world/vehicle/marker",
+               rr.Mesh3D(vertex_positions=_MARKER_VERTS_M, triangle_indices=[[0, 1, 2]],
+                         albedo_factor=_MARKER_RGB),
+               static=True)
 
     def _log_rings(self, schedule):
         """Ring boundaries, straight from the passed `Schedule`, drawn as
