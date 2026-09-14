@@ -183,12 +183,6 @@ _SERIES = {
     "stats/ghosts/spared": ("kept by the guard", (86, 180, 233)),
 }
 
-# The car, drawn under the vehicle transform. Display only -- roughly KITTI's
-# recording car, a VW Passat estate (~4.8 x 1.8 x 1.5 m). The vehicle frame's
-# origin is on the ground, so the box sits on it.
-_CAR_HALF_SIZE_M = (2.4, 0.9, 0.75)
-_CAR_RGB = (40, 200, 90)
-_HEADING_RGB = (240, 228, 66)
 _TRAIL_RGB = (240, 180, 60)
 
 
@@ -345,7 +339,6 @@ class PipelineView:
             rr.log(path, rr.SeriesLines(colors=[rgb], names=[name], widths=[2.5]), static=True)
         self._log_rings(schedule)
         self._log_blind_cone(blind_cone_radius_m())
-        self._log_car()
 
     def _log_rings(self, schedule):
         """Ring boundaries, straight from the passed `Schedule`, drawn as
@@ -608,19 +601,6 @@ class PipelineView:
             rr.send_blueprint(_demo_blueprint())
         except (AttributeError, TypeError):   # a viewer too old for the layout API
             pass
-
-    def _log_car(self):
-        """The vehicle as a car-sized box with a heading arrow, under the
-        vehicle transform -- static, so it costs nothing per frame. A dot said
-        where the car was; this also says which way it is facing."""
-        rr.log("world/vehicle/body",
-               rr.Boxes3D(centers=[[0.0, 0.0, _CAR_HALF_SIZE_M[2]]],
-                          half_sizes=[_CAR_HALF_SIZE_M], colors=[_CAR_RGB], fill_mode="solid"),
-               static=True)
-        rr.log("world/vehicle/heading",
-               rr.Arrows3D(origins=[[0.0, 0.0, 2.0 * _CAR_HALF_SIZE_M[2] + 0.2]],
-                           vectors=[[6.0, 0.0, 0.0]], colors=[_HEADING_RGB], radii=0.15),
-               static=True)
 
     def _log_trail(self):
         """The path driven so far, world frame. Redrawn with the map, not every

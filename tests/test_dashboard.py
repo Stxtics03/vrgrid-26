@@ -513,9 +513,9 @@ def test_rings_are_drawn_as_squares_at_their_half_width(tmp_path, monkeypatch):
         pts = strip.strips.as_arrow_array().to_pylist()[0]
         xy = np.abs(np.array(pts)[:, :2])
         assert len(pts) == 5 and np.allclose(xy, ring.half_width_m)
-    # the car is drawn once, static, as a body and a heading -- not per frame
-    assert [p for p, _ in calls if p in ("world/vehicle/body", "world/vehicle/heading")] == [
-        "world/vehicle/body", "world/vehicle/heading"]
+    # no car model in the scene: the rings and blind cone already mark the vehicle
+    assert not [p for p, _ in calls
+                if p in ("world/vehicle/body", "world/vehicle/heading", "world/vehicle/marker")]
 
 
 def test_charts_carry_two_lines_each_and_the_table_updates_every_frame(tmp_path, monkeypatch):
