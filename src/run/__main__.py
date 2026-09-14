@@ -84,6 +84,10 @@ def iter_pipeline(seq: str, max_frames: int | None, use_patchworkpp: bool = True
         return timer.stage(name) if timer is not None else nullcontext()
 
     scans = loader.scans(seq, max_frames=max_frames, start_frame=start_frame)
+    # A fresh Patchwork++ estimator per run: it adapts from past scans, so a
+    # shared one made a second run in the same process map differently (see
+    # `ground.reset_estimator`). Runs here, at the first frame's pull.
+    ground.reset_estimator()
     i = 0
     while True:
         # Timed by hand rather than with `stage("load")`, because the pull that

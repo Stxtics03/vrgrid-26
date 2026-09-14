@@ -77,6 +77,9 @@ def shot(name, seq, lo, hi, *, warmup=0, color_by="class", palette="semantickitt
     """Frames [lo-warmup, hi) run through the wired pipeline; saved to name.rrd."""
     path = OUT / f"{name}.rrd"
     start = max(0, lo - warmup)
+    # Every shot runs in this one process; without a fresh Patchwork++
+    # estimator a shot's ground masks depend on the shots before it.
+    ground.reset_estimator()
     engine = None if no_map else MapEngine(SCHED, ghost_removal=not show_ghosts)
     view = PipelineView(SCHED, spawn=False, save_path=str(path), color_by=color_by,
                         ghost_removal=not show_ghosts, palette=palette, engine=engine)
