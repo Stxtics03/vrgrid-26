@@ -449,11 +449,11 @@ def test_height_ramp_table_matches_the_exact_ramp():
 # --------------------------------------------------------------------------
 
 
-def test_key_numbers_table_derives_every_figure():
+def test_key_numbers_table_follows_the_deck_and_derives_every_figure():
     from types import SimpleNamespace
 
     from vrgrid.cell import CELL_BYTES
-    from vrgrid.dash._config import status_markdown, uniform_2_5d_baseline
+    from vrgrid.dash._config import DECK_MEASURED, status_markdown, uniform_2_5d_baseline
 
     sched = load_schedule("5/10/20/40")
     assert uniform_2_5d_baseline(sched)["bytes"] == (200 / 0.05) ** 2 * CELL_BYTES == 192e6
@@ -466,16 +466,23 @@ def test_key_numbers_table_derives_every_figure():
         counters=SimpleNamespace(cleared=9_214, protected=8_057, truncated=0), run=run,
         timing_ms={"perception": 84.0, "engine": 55.0, "dashboard": 13.0, "total": 152.0},
         ground_method="patchworkpp")
+    # identity and live status
+    assert "SIH26053" in md and "Chronicles.exe" in md
     assert "Frame 1,284" in md and "ghost removal ON" in md and "Patchwork++" in md
-    assert "budget 100 ms per frame" in md
     assert "| **Frame time** | **152 ms · 6.6 fps** | 152 ms · 6.6 fps |" in md
-    assert "| perception | 84 ms | 84 ms |" in md and "| map engine | 55 ms | 55 ms |" in md
-    assert "| **Ghost cells removed** | **9,214** | 50,841 |" in md
+    assert "| Ghost cells removed | 9,214 | 50,841 |" in md
     assert "| kept by the guard | 8,057 | 56,107 |" in md
     assert "| skipped by the cap | 0 | 0 |" in md                 # no flag when it is 0
     assert "**1.67 MB**" in md and "peak 2.71 MB" in md          # 139,143 / 225,916 x 12 B
-    assert f"**{192e6 / alloc:.1f}× more**" in md                 # 21.5x, the report's
-    assert f"**{dense_3d_baseline(sched)['bytes'] / alloc:,.0f}× more**" in md   # 286x
+    # the deck's memory table, derived from the schedule
+    assert "| **vrgrid 5/10/20/40 cm** | **8.94 MB** | **1×** |" in md
+    assert f"| Uniform 5 cm 2.5D | 192.00 MB | {192e6 / alloc:.1f}× |" in md          # 21.5x
+    assert f"{dense_3d_baseline(sched)['bytes'] / alloc:,.0f}× |" in md               # 286x
+    assert "Sparse / hashed 3D" in md
+    # the deck's measured results and scope limits
+    for label, value in DECK_MEASURED:
+        assert f"| {label} | {value} |" in md
+    assert f"{blind_cone_radius_m():.2f} m · 8.3 m · 25 m" in md
 
     off = status_markdown(5, 10, sched, ghost_removal=False)
     assert "ghost removal OFF" in off and "| Ghost cells removed | off | off |" in off

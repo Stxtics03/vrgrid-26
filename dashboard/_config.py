@@ -199,44 +199,55 @@ def _rate(ms) -> str:
     return "—" if not ms else f"{ms:.0f} ms · {1e3 / ms:.1f} fps"
 
 
+# Results the SIH26053 deck quotes (slides 4-5), shown on the demo's side panel.
+# Each is measured, and each entry names where: none is typed from memory.
+DECK_MEASURED = (
+    # docs/known-limitations.md §6 -- 40 frames, 5_10_20_40, Patchwork++, rings 1-3
+    ("Coarsening cost ρ, rings 1–3", "1.18 – 1.84 (seq 07 / 08)"),
+    # docs/known-limitations.md §1 -- post-fix re-soak of every seq 08 frame
+    ("Frames where ghost cleanup went inert", "0 of 4,071 (seq 08)"),
+    # tests/test_determinism.py -- CI-blocking
+    ("Two identical runs", "bit-identical map hash"),
+)
+# scripts/memory_table.py -- the sparse / hashed 3D row is an estimate there too
+SPARSE_3D_ROW = ("Sparse / hashed 3D", "~130–240 MB", "~15–27×")
+# scripts/sampling_table.py -- derived scope limits for the HDL-64E
+POTHOLE_30CM_RANGE_M = 8.3
+PEDESTRIAN_MOTION_RANGE_M = 25
+
+
 def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_removal: bool,
                     counters=None, run: dict | None = None, timing_ms: dict | None = None,
                     ground_method: str | None = None, has_map: bool = True) -> str:
-    """The "Key numbers" side panel: this frame beside the whole run so far.
+    """The side panel, laid out after the SIH26053 deck: three short tables.
 
-    Everything a judge might ask about sits here in one table instead of on
-    five overlapping chart lines: frame time and fps against the budget, the
-    three stages that make it up, ghost cells removed / kept by the guard /
-    skipped by the candidate cap, and map memory now against its peak. Below
-    it, the memory claim, derived from the schedule exactly as
-    `scripts/memory_table.py` derives it.
+    1. Live -- this frame beside the whole run: frame time against the budget,
+       ghost cells removed / kept by the guard / skipped by the cap, map memory.
+    2. Memory at the same extent -- the deck's slide-4 table, derived from the
+       schedule exactly as `scripts/memory_table.py` derives it.
+    3. Measured -- the deck's slide-4/5 results and scope limits (DECK_MEASURED).
 
     `counters` is this frame's `StepCounters`; `timing_ms` this frame's
     `{"perception", "engine", "dashboard", "total"}`; `run` the view's running
-    sums (`n` timed frames, the same four timings, `cleared` / `protected` /
-    `truncated`, `peak_occupied`). Any of them may be None and shows as "—".
+    sums. Any of them may be None and shows as "—".
     """
     budget = frame_budget_ms()
     ground = ("" if not ground_method else
               " · ground Patchwork++" if ground_method == "patchworkpp" else
               " · ⚑ ground: semantic-class fallback")
     rows = [
-        (f"**Frame {frame_index:,}** · ghost removal {'ON' if ghost_removal else 'OFF'}{ground}"
-         f" · budget {budget:.0f} ms per frame"),
+        "**VRgrid · foveated 2.5D LiDAR map** · SIH26053 · Chronicles.exe",
         "",
-        "| | this frame | whole run |",
+        (f"**Frame {frame_index:,}** · ghost removal {'ON' if ghost_removal else 'OFF'}{ground}"
+         f" · budget {budget:.0f} ms"),
+        "",
+        "| Live | this frame | whole run |",
         "|---|---|---|",
     ]
     t = timing_ms or {}
     n = (run or {}).get("n", 0)
-
-    def avg(key):
-        return run[key] / n if run and n else None
-
-    rows.append(f"| **Frame time** | **{_rate(t.get('total'))}** | {_rate(avg('total'))} |")
-    for key, label in (("perception", "perception"), ("engine", "map engine"),
-                       ("dashboard", "dashboard")):
-        rows.append(f"| {label} | {_ms(t.get(key))} | {_ms(avg(key))} |")
+    avg_total = run["total"] / n if run and n else None
+    rows.append(f"| **Frame time** | **{_rate(t.get('total'))}** | {_rate(avg_total)} |")
 
     if not has_map:
         rows.append("| Map | back end off (`--no-map`) | |")
@@ -251,7 +262,7 @@ def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_remova
     if ghost_removal:
         capped = run is not None and run["truncated"] > 0
         rows += [
-            f"| **Ghost cells removed** | **{now('cleared')}** | {total('cleared')} |",
+            f"| Ghost cells removed | {now('cleared')} | {total('cleared')} |",
             f"| kept by the guard | {now('protected')} | {total('protected')} |",
             (f"| skipped by the cap{' ⚑' if capped else ''} | {now('truncated')} | "
              f"{total('truncated')} |"),
@@ -266,14 +277,23 @@ def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_remova
     uniform = uniform_2_5d_baseline(schedule)["bytes"]
     dense = dense_3d_baseline(schedule)["bytes"]
     base = f"{schedule.base_cell_m * 100:g} cm"
+    cells = "/".join(f"{r.cell_m * 100:g}" for r in schedule.rings)
     rows += [
         "",
-        "| Memory claim | |",
+        "| Memory, same extent | size | vs vrgrid |",
+        "|---|---|---|",
+        f"| **vrgrid {cells} cm** | **{_fmt_bytes(alloc)}** | **1×** |",
+        f"| Uniform {base} 2.5D | {_fmt_bytes(uniform)} | {uniform / alloc:.1f}× |",
+        f"| {SPARSE_3D_ROW[0]} | {SPARSE_3D_ROW[1]} | {SPARSE_3D_ROW[2]} |",
+        f"| Dense {base} 3D | {_fmt_bytes(dense)} | {dense / alloc:,.0f}× |",
+        "",
+        "| Measured | |",
         "|---|---|",
-        f"| Fixed allocation | {_fmt_bytes(alloc)} · never grows |",
-        f"| Uniform {base} 2.5D | {_fmt_bytes(uniform)} · **{uniform / alloc:.1f}× more** |",
-        f"| Dense {base} 3D | {_fmt_bytes(dense)} · **{dense / alloc:,.0f}× more** |",
     ]
+    rows += [f"| {label} | {value} |" for label, value in DECK_MEASURED]
+    rows.append(
+        f"| Blind cone · 30 cm pothole · pedestrian motion | {blind_cone_radius_m():.2f} m · "
+        f"{POTHOLE_30CM_RANGE_M:g} m · {PEDESTRIAN_MOTION_RANGE_M:g} m |")
     return "\n".join(rows)
 
 

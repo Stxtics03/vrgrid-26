@@ -227,7 +227,7 @@ def _demo_blueprint():
                            axis_y=rrb.ScalarAxis(range=(0.0, 3.0 * budget_ms))),
         rrb.TimeSeriesView(name="Ghost cells per frame · green: removed · blue: kept",
                            origin="/stats/ghosts", plot_legend=no_legend),
-        row_shares=[6, 3, 3],      # 5 cut the last memory-claim row, the 286x one
+        row_shares=[11, 3, 3],     # three tables (live, memory, measured); 9 cut the last row
     )
     return rrb.Blueprint(
         rrb.Horizontal(map_column, side, column_shares=[5, 3]),
