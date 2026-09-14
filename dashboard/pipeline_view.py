@@ -169,7 +169,7 @@ def _confidence_ramp(c: np.ndarray) -> np.ndarray:
 #
 # One fixed layout, saved into every recording, so a baked scene opens the same
 # way on any machine: two map views on the left (the whole map from above, and
-# a follow camera close behind the car), and on the right two tabs -- "Live"
+# a follow camera close behind the car), and on the right two tabs -- "Run"
 # (numbers, GPU chart, ghost chart, status feed) and "Details" (the memory
 # comparison, measured results and legend, which never change). The entity tree
 # and selection panel are collapsed; expand the left panel for the eye icons --
@@ -211,24 +211,29 @@ def _demo_blueprint(schedule):
     # follow: by frame 1,000 of seq 00 the car was 370 m away and the view still
     # sat at the origin. Position but not heading, on purpose: a camera bolted
     # to the car's yaw swings on every small heading change between 10 Hz frames.
-    def map_view(name, position, look_target):
+    def map_view(name, position, look_target, contents="/world/**"):
         return rrb.Spatial3DView(
-            name=name, origin="/world/follow", contents="/world/**",
+            name=name, origin="/world/follow", contents=contents,
             background=rrb.Background(color=[14, 17, 22]),
             line_grid=rrb.LineGrid3D(visible=False),
             eye_controls=rrb.EyeControls3D(position=position, look_target=look_target))
 
     maps = rrb.Vertical(
-        # High and nearly straight down: the whole 200 m map, all four rings.
-        map_view("Overview · the whole map, all four rings", [-20.0, 0.0, 150.0], [0.0, 0.0, 0.0]),
-        # Low behind the car: the fine 5 cm ring up close.
-        map_view("Around the car · follow camera", [-30.0, -18.0, 22.0], [15.0, 0.0, 0.0]),
+        # High and nearly straight down: the whole 200 m map, all four rings --
+        # the MAP only. With the raw sweep drawn over it (class colours on top
+        # of height colours) nobody could tell sensor data from map cells.
+        map_view("Overview · the map, all four rings", [-20.0, 0.0, 150.0], [0.0, 0.0, 0.0],
+                 contents=["+ /world/**", "- /world/points", "- /world/ghosts"]),
+        # Low behind the car: the fine 5 cm ring up close, with the sweep on it.
+        map_view("Around the car · map + LiDAR points", [-30.0, -18.0, 22.0], [15.0, 0.0, 0.0]),
         row_shares=[1, 1],
     )
 
     no_legend = rrb.PlotLegend(visible=False)     # the titles name the colours
     live = rrb.Vertical(
-        rrb.TextDocumentView(name="Live numbers", origin="/panel/status"),
+        # "Run", not "Live": the same layout plays baked recordings, and a
+        # replay labelled "Live" invites "is this running now?".
+        rrb.TextDocumentView(name="Run numbers", origin="/panel/status"),
         rrb.TimeSeriesView(name="GPU rendering % · green usage · pink memory",
                            origin="/stats/gpu_pct", plot_legend=no_legend,
                            axis_y=rrb.ScalarAxis(range=(0.0, 100.0))),
@@ -247,8 +252,8 @@ def _demo_blueprint(schedule):
                 ],
             ),
         ),
-        row_shares=[3.6, 2, 2, 2],     # 3 cut the table's last row (Map memory)
-        name="Live",
+        row_shares=[4.0, 2, 2, 2],     # 3.6 fit six rows; the table now has seven
+        name="Run",
     )
     # What never changes while the demo plays, on its own tab so the Live tab
     # can stay roomy instead of packing three tables above the charts.

@@ -469,7 +469,9 @@ def test_live_numbers_table_shows_this_frame_beside_the_whole_run():
     assert "| Kept by the guard | 8,057 | 56,107 |" in md
     assert "| Skipped by the cap | 0 | 0 |" in md                 # no flag when it is 0
     # 139,143 / 225,916 cells x 12 B, against the fixed 745,000-cell allocation
-    assert "| Map memory | 1.67 MB | peak 2.71 MB of 8.94 MB |" in md
+    assert "| Map cells in use | 1.67 MB | peak 2.71 MB |" in md
+    assert "| Map allocation | 8.94 MB, fixed at startup | never grows |" in md   # the real footprint
+    assert "Map memory" not in md                                  # no ambiguous footprint figure
     # the static tables are on the Details tab, not repeated every frame
     assert "Measured" not in md and "Dense" not in md
 

@@ -210,7 +210,7 @@ DECK_MEASURED = (
     ("Two identical runs", "bit-identical map hash"),
 )
 # scripts/memory_table.py -- the sparse / hashed 3D row is an estimate there too
-SPARSE_3D_ROW = ("Sparse / hashed 3D", "~130–240 MB", "~15–27×")
+SPARSE_3D_ROW = ("Sparse / hashed 3D (estimate)", "~130–240 MB", "~15–27×")
 # scripts/sampling_table.py -- derived scope limits for the HDL-64E
 POTHOLE_30CM_RANGE_M = 8.3
 PEDESTRIAN_MOTION_RANGE_M = 25
@@ -220,7 +220,7 @@ def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_remova
                     counters=None, run: dict | None = None, timing_ms: dict | None = None,
                     ground_method: str | None = None, has_map: bool = True,
                     gpu=None) -> str:
-    """The "Live" tab's numbers: one heading, one line of context, one table.
+    """The "Run" tab's numbers: one heading, one line of context, one table.
 
     Only what changes while the demo plays -- this frame beside the whole run:
     frame time, the GPU drawing the dashboard (when `gpu`, a
@@ -277,9 +277,13 @@ def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_remova
     else:
         rows.append("| Ghost cells removed | off | off |")
     peak = max(int((run or {}).get("peak_occupied", 0)), int(n_occupied))
-    rows.append(f"| Map memory | {_fmt_bytes(int(n_occupied) * CELL_BYTES)} | "
-                f"peak {_fmt_bytes(peak * CELL_BYTES)} of "
-                f"{_fmt_bytes(schedule.total_cells * CELL_BYTES)} |")
+    # Two rows, not one "Map memory" figure: the storage the occupied cells
+    # take is NOT the process footprint -- the whole grid is allocated once at
+    # startup, and that fixed allocation is the headline claim.
+    rows.append(f"| Map cells in use | {_fmt_bytes(int(n_occupied) * CELL_BYTES)} | "
+                f"peak {_fmt_bytes(peak * CELL_BYTES)} |")
+    rows.append(f"| Map allocation | {_fmt_bytes(schedule.total_cells * CELL_BYTES)}, "
+                "fixed at startup | never grows |")
     return "\n".join(rows)
 
 
@@ -309,6 +313,8 @@ def details_markdown(schedule) -> str:
         "",
         "### Measured",
         "",
+        "From the evaluation runs named in each row, not from the recording playing now.",
+        "",
         "| result | value |",
         "|---|---|",
     ]
@@ -328,7 +334,8 @@ def map_legend_markdown(schedule, *, color_by: str, blind_cone_m: float,
     one item per line, so it reads at a glance instead of as a wrapped strip.
     Ring sizes come from the schedule; nothing here is typed by hand.
     """
-    points = f"points coloured by `{color_by}`" + (f" ({palette_note})" if palette_note else "")
+    points = (f"LiDAR points (follow view only) coloured by `{color_by}`"
+              + (f" ({palette_note})" if palette_note else ""))
     lines = ["### Rings (squares around the car)", ""]
     lines += [f"- ring {i}: {r.cell_m * 100:g} cm to {r.half_width_m:g} m"
               for i, r in enumerate(schedule.rings)]
@@ -341,8 +348,8 @@ def map_legend_markdown(schedule, *, color_by: str, blind_cone_m: float,
         "- **violet** unknown: never assumed free",
         (f"- **red circle** blind cone {blind_cone_m:.2f} m, the sensor's blind spot right now "
          "(the map inside it is remembered from earlier frames)"),
-        "- **red dots** moving points (ghosts)",
-        f"- **white arrow** the car · **amber line** path driven · {points}",
+        "- **red dots** ghosts (moving points) · **white arrow** the car · **amber line** path driven",
+        f"- {points}",
     ]
     if features:
         lines += [
