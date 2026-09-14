@@ -428,3 +428,17 @@ def test_memory_overlay_tracks_the_real_occupied_count(tmp_path):
     ns = [x[0] for x in seen]
     assert ns[-1] > ns[0] > 0                     # the map fills as frames arrive
     assert all(0 < x[2] < 1e7 for x in seen)      # ratio stays a sane finite number
+
+
+def test_height_ramp_table_matches_the_exact_ramp():
+    """Height colours come from a precomputed table -- interpolating them was
+    12 of the 34 ms a map redraw took. The table must stay within one uint8
+    level of the exact ramp everywhere, including outside the clipped band,
+    and a non-default band must still take the exact path."""
+    from vrgrid.dash.pipeline_view import _height_ramp, _height_ramp_exact
+
+    z = np.linspace(-6.0, 20.0, 50_001)
+    fast, exact = _height_ramp(z), _height_ramp_exact(z, -3.0, 15.0)
+    assert fast.dtype == np.uint8 and fast.shape == exact.shape
+    assert np.abs(fast.astype(int) - exact.astype(int)).max() <= 1
+    assert np.array_equal(_height_ramp(z, -1.0, 5.0), _height_ramp_exact(z, -1.0, 5.0))

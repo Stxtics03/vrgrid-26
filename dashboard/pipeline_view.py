@@ -66,12 +66,30 @@ _HEIGHT_STOPS = np.array(
 )
 
 
-def _height_ramp(z: np.ndarray, lo: float = -3.0, hi: float = 15.0) -> np.ndarray:
-    """(N, 3) uint8 colour per cell from its world-z, clipped to [lo, hi]."""
+def _height_ramp_exact(z: np.ndarray, lo: float, hi: float) -> np.ndarray:
     t = np.clip((np.asarray(z, np.float32) - lo) / (hi - lo), 0.0, 1.0) * 3.0
     i = np.clip(t.astype(np.int64), 0, 2)
     f = (t - i)[:, None]
     return (_HEIGHT_STOPS[i] * (1.0 - f) + _HEIGHT_STOPS[i + 1] * f).astype(np.uint8)
+
+
+# The ramp, evaluated once at 1,024 heights over the fixed band: 1.8 cm a step,
+# below what one uint8 colour channel can show. Interpolating ~180,000 cells per
+# map redraw was 12 ms of the 34 ms `_log_occupied` took (profiled, seq 00);
+# a table lookup is one index cast and one gather.
+_HEIGHT_LUT_N = 1024
+_HEIGHT_LO_M, _HEIGHT_HI_M = -3.0, 15.0
+_HEIGHT_LUT = _height_ramp_exact(
+    np.linspace(_HEIGHT_LO_M, _HEIGHT_HI_M, _HEIGHT_LUT_N), _HEIGHT_LO_M, _HEIGHT_HI_M)
+
+
+def _height_ramp(z: np.ndarray, lo: float = _HEIGHT_LO_M, hi: float = _HEIGHT_HI_M) -> np.ndarray:
+    """(N, 3) uint8 colour per cell from its world-z, clipped to [lo, hi]."""
+    if (lo, hi) != (_HEIGHT_LO_M, _HEIGHT_HI_M):
+        return _height_ramp_exact(z, lo, hi)
+    idx = (np.asarray(z, np.float32) - lo) * ((_HEIGHT_LUT_N - 1) / (hi - lo)) + 0.5
+    np.clip(idx, 0, _HEIGHT_LUT_N - 1, out=idx)
+    return _HEIGHT_LUT[idx.astype(np.intp)]
 
 
 # Occupancy layers are drawn as three visually distinct things -- "unknown is
