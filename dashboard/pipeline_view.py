@@ -371,9 +371,22 @@ class PipelineView:
         # `features.detect` costs 1,137 ms -- see FEATURE_INTERVAL.
         self.features = bool(features) and engine is not None
         self._frames_logged = 0
-        rr.init("vrgrid_pipeline", spawn=spawn)
-        if save_path:
-            rr.save(save_path)
+        # Both a live viewer and a file: log to both at once. `rr.save` on its
+        # own replaces the viewer connection, so a --viz --save run used to
+        # record without rendering -- and the GPU chart then recorded an idle
+        # GPU. Rendering while recording is what gives that chart its meaning.
+        self.rendering_live = bool(spawn)
+        if spawn and save_path:
+            rr.init("vrgrid_pipeline", spawn=False)
+            # 40%, not Rerun's 75% default: on the 15 GB demo laptop the default
+            # outgrew free RAM and the OS watchdog killed the run. The viewer
+            # drops its oldest frames at the cap; the file sink keeps them all.
+            rr.spawn(connect=False, memory_limit="40%")
+            rr.set_sinks(rr.GrpcSink(), rr.FileSink(save_path))
+        else:
+            rr.init("vrgrid_pipeline", spawn=spawn)
+            if save_path:
+                rr.save(save_path)
 
         rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         # The layout goes out with the first frame (`_send_blueprint`), once the
@@ -416,7 +429,9 @@ class PipelineView:
             level=rr.TextLogLevel.INFO, color=_FEED_OK_RGB), static=True)
         gpu = self._gpu.latest()
         rr.log("panel/feed/startup/gpu", rr.TextLog(
-            (f"GPU: {gpu.name} · {gpu.mem_total_mib / 1024:.1f} GB · telemetry via nvidia-smi"
+            (f"GPU: {gpu.name} · {gpu.mem_total_mib / 1024:.1f} GB · "
+             + ("usage recorded while rendering this run live" if self.rendering_live
+                else "usage recorded while baking, no viewer rendering")
              if gpu is not None else "GPU telemetry unavailable (no NVIDIA GPU / nvidia-smi)"),
             level=rr.TextLogLevel.INFO if gpu is not None else rr.TextLogLevel.WARN,
             color=_FEED_OK_RGB if gpu is not None else _FEED_WARN_RGB), static=True)

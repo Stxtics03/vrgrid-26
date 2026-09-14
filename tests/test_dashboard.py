@@ -659,3 +659,30 @@ def test_startup_feed_lines_do_not_overwrite_each_other_or_the_frame_lines(tmp_p
     view.log_frame(_wall_frame(0), timing_ms={"perception": 10.0, "engine": 0.0})
     assert [p for p, _ in calls if p == "panel/feed/frames"] == ["panel/feed/frames"]
     assert not [p for p, _ in calls if p == "panel/feed"]          # nothing on the bare path
+
+
+def test_a_live_viewer_and_a_file_are_both_logged_to(tmp_path, monkeypatch):
+    """--viz with --save must render AND record. `rr.save` alone replaces the
+    viewer connection, so the GPU chart of such a recording showed an idle GPU
+    rather than the load of rendering the run it records."""
+    import rerun as rr
+    from vrgrid.dash.pipeline_view import PipelineView
+
+    spawned, sinks = [], []
+    monkeypatch.setattr(rr, "spawn", lambda **kw: spawned.append(kw))
+    monkeypatch.setattr(rr, "set_sinks", lambda *s, **kw: sinks.extend(s))
+    view = PipelineView(load_schedule("5/10/20/40"), spawn=True,
+                        save_path=str(tmp_path / "both.rrd"))
+    view._gpu.stop()
+    assert view.rendering_live
+    assert spawned and spawned[0].get("connect") is False
+    assert {type(s).__name__ for s in sinks} == {"GrpcSink", "FileSink"}
+
+
+def test_saving_without_a_viewer_is_labelled_as_not_rendering(tmp_path):
+    from vrgrid.dash.pipeline_view import PipelineView
+
+    view = PipelineView(load_schedule("5/10/20/40"), spawn=False,
+                        save_path=str(tmp_path / "file.rrd"))
+    view._gpu.stop()
+    assert view.rendering_live is False
