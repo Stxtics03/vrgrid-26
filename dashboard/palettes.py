@@ -53,32 +53,6 @@ _CLASS_LUT = np.array([class_to_color(c) for c in range(-1, 19)], dtype=np.uint8
 # does not. The 3x point radius is the redundant, colour-independent cue.
 GHOST_RGB = (204, 121, 167)  # #CC79A7
 
-# --- map layers ----------------------------------------------------------------
-#
-# Occupied cells are coloured by the RING that stores them, so resolution -- and
-# with it accuracy -- reads straight off the map: red close in (5 cm cells, the
-# most accurate), orange, yellow, then light grey at 40 cm. Chosen by a grid
-# search maximising the worst-case Delta-E over normal vision and all three
-# simulations in `cvd.py`: 16.6 between rings, >= 21.5 against the ghost
-# highlight, the free / unknown colours and the dark background. A plainer red
-# (220, 50, 47) sat at Delta-E 2.9 from GHOST_RGB under deuteranopia -- moving
-# objects would have vanished into the close-range zone.
-RING_RGB = np.array([
-    (230, 40, 20),    # ring 0 -- red, 5 cm
-    (255, 110, 0),    # ring 1 -- orange, 10 cm
-    (250, 250, 60),   # ring 2 -- yellow, 20 cm
-    (210, 210, 220),  # ring 3 -- light grey, 40 cm
-], dtype=np.uint8)
-RING_COLOUR_NAMES = ("red", "orange", "yellow", "grey")
-
-# Free was slate (110, 125, 140) until the "map" audit put it beside the ghost
-# highlight for the first time: Delta-E 9.6 under protanopia, below SAFE. This
-# dark blue-grey clears every other map colour by >= 26.2 in all four views.
-FREE_RGB = (80, 90, 90)          # dark blue-grey -- seen and clear
-UNKNOWN_RGB = (150, 90, 160)     # muted violet -- seen, not enough evidence
-BLIND_CONE_RGB = (175, 120, 205)  # violet outline: the blind cone is unknown, same family
-TRAIL_RGB = (86, 180, 233)       # Okabe-Ito sky blue -- Delta-E >= 28.6 from every ring colour
-
 # --- `groups` palette: 19 SemanticKITTI classes -> 7 colourblind-safe groups --
 #
 # Colours are Okabe & Ito (2008) plus two greys, with #CC79A7 held back for the

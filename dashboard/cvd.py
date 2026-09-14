@@ -18,17 +18,7 @@ viewer (the optional `[dash]` extra) is not installed.
 
 import numpy as np
 
-from .palettes import (
-    FREE_RGB,
-    GHOST_RGB,
-    GROUP_NAMES,
-    GROUP_RGB,
-    RING_COLOUR_NAMES,
-    RING_RGB,
-    TRAIL_RGB,
-    UNKNOWN_RGB,
-    class_to_color,
-)
+from .palettes import GHOST_RGB, GROUP_NAMES, GROUP_RGB, class_to_color
 
 # Machado et al. 2009, severity 1.0. Applied to linear RGB.
 SIM = {
@@ -116,11 +106,6 @@ def _palettes() -> dict[str, dict[str, list[int]]]:
         "class (groups)": {n: list(GROUP_RGB[i]) for i, n in enumerate(GROUP_NAMES)},
         "motion": {"static": [90, 90, 90], "moving": list(GHOST_RGB)},
         "ground": {"ground": [170, 130, 90], "non-ground": [70, 130, 180]},
-        # Everything drawn on the map at once: occupied by ring, free, unknown,
-        # the ghost highlight over them and the trail through them.
-        "map": {f"ring {i} ({name})": list(RING_RGB[i]) for i, name in enumerate(RING_COLOUR_NAMES)}
-        | {"free": list(FREE_RGB), "unknown": list(UNKNOWN_RGB),
-           "ghost": list(GHOST_RGB), "trail": list(TRAIL_RGB)},
         "intensity/reflectivity": {f"v={v}": [v, v, v] for v in (0, 64, 128, 192, 255)},
     }
 

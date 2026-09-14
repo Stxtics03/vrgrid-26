@@ -37,7 +37,7 @@ def test_normal_is_identity_and_greyscale_is_cvd_invariant():
 
 
 @pytest.mark.parametrize(
-    "name", ["class (groups)", "motion", "ground", "intensity/reflectivity", "map"]
+    "name", ["class (groups)", "motion", "ground", "intensity/reflectivity"]
 )
 def test_palette_is_colourblind_safe(name):
     de, (kind, a, b) = min_delta_e(_palettes()[name])
