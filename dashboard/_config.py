@@ -42,6 +42,12 @@ def playback_fps() -> float:
     return 1.0 / float(load_thresholds()["fusion"]["frame_dt_s"])
 
 
+def frame_budget_ms() -> float:
+    """The per-frame budget: one sensor period, `1e3 * fusion.frame_dt_s`
+    (100 ms at KITTI's 10 Hz). The line the frame-time chart is read against."""
+    return 1e3 * float(load_thresholds()["fusion"]["frame_dt_s"])
+
+
 def available_schedules() -> list[str]:
     """Schedule names discovered from `configs/schedule_*.yaml` -- no hardcoding.
 
@@ -109,6 +115,17 @@ def dense_3d_baseline(schedule) -> dict:
     }
 
 
+def uniform_2_5d_baseline(schedule) -> dict:
+    """A uniform grid at the schedule's finest cell over the outer ring's
+    footprint, with the same `CELL_BYTES` cell -- the row `scripts/memory_table.py`
+    prints, derived the same way. For `5_10_20_40`: (200 / 0.05)^2 * 12 B = 192 MB.
+    It is a pure cell-count ratio against ours, so it does not depend on bytes
+    per cell."""
+    footprint_m = 2.0 * schedule.rings[-1].half_width_m
+    cells = (footprint_m / schedule.base_cell_m) ** 2
+    return {"footprint_m": footprint_m, "cells": cells, "bytes": cells * CELL_BYTES}
+
+
 def grid_memory_stats(n_occupied: int, schedule) -> dict:
     """Live map memory vs the dense-3D baseline for `n_occupied` occupied cells.
 
@@ -171,3 +188,97 @@ def memory_overlay_markdown(n_occupied: int, schedule) -> str:
             f"({s['dense_bytes'] / (schedule.total_cells * CELL_BYTES):,.0f}x -- the report figure)._"
         ),
     ])
+
+
+def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_removal: bool,
+                    counters=None, totals: dict | None = None, frame_ms: float | None = None,
+                    ground_method: str | None = None, has_map: bool = True) -> str:
+    """The "Live" side panel: what a judge should be able to read off the screen
+    at any frame. Logged every frame, so it is never blank between map redraws.
+
+    The memory rows are the report's figures, derived here rather than typed:
+    live storage (`n_occupied * CELL_BYTES`), the fixed allocation it can never
+    exceed, and that allocation against the uniform-2.5D and dense-3D baselines
+    -- the same two ratios `scripts/memory_table.py` prints. `counters` is a
+    `StepCounters`; `totals` sums them over the run.
+    """
+    base_cm = f"{schedule.base_cell_m * 100:g} cm"
+    rows = [f"**Frame {frame_index:,}**", "", "| | |", "|---|---|"]
+    if has_map:
+        alloc = schedule.total_cells * CELL_BYTES
+        uniform = uniform_2_5d_baseline(schedule)["bytes"]
+        dense = dense_3d_baseline(schedule)["bytes"]
+        rows += [
+            (f"| **Map memory now** | **{_fmt_bytes(int(n_occupied) * CELL_BYTES)}** · "
+             f"{int(n_occupied):,} occupied cells |"),
+            (f"| Fixed allocation | {_fmt_bytes(alloc)} · {schedule.total_cells:,} cells, "
+             "never grows |"),
+            (f"| vs uniform {base_cm} 2.5D | {_fmt_bytes(uniform)} · "
+             f"**{uniform / alloc:.1f}× smaller** |"),
+            f"| vs dense {base_cm} 3D | {_fmt_bytes(dense)} · **{dense / alloc:,.0f}× smaller** |",
+        ]
+        if not ghost_removal:
+            rows.append("| Ghost removal | **OFF** · trails stay in the map |")
+        elif counters is not None:
+            rows.append(f"| Ghost removal | ON · {counters.cleared:,} cleared, "
+                        f"{counters.protected:,} spared this frame |")
+        else:
+            rows.append("| Ghost removal | ON |")
+        if ghost_removal and totals is not None:
+            flag = "" if totals["truncated"] == 0 else " ⚑ cap hit"
+            rows.append(f"| Run totals | {totals['cleared']:,} cleared · "
+                        f"{totals['protected']:,} spared · {totals['truncated']:,} truncated{flag} |")
+    else:
+        rows.append("| Map | back end off (`--no-map`) |")
+    if frame_ms:
+        budget = frame_budget_ms()
+        verdict = "within" if frame_ms <= budget else "over"
+        rows.append(f"| Frame time | {frame_ms:.0f} ms · {1e3 / frame_ms:.1f} fps · "
+                    f"{verdict} the {budget:.0f} ms budget |")
+    if ground_method:
+        ground = "Patchwork++" if ground_method == "patchworkpp" else "⚑ semantic-class fallback"
+        rows.append(f"| Ground | {ground} |")
+    return "\n".join(rows)
+
+
+def map_legend_markdown(schedule, *, color_by: str, blind_cone_m: float,
+                        palette_legend: str | None = None, features: bool = False,
+                        feature_interval: int = 20) -> str:
+    """The "Legend" side panel: the colour key and each ring's cell size, read
+    from the schedule. Logged once, static. Replaces the long instructions
+    document, which read as developer notes on a demo screen."""
+    rows = [
+        # Rings first, as one line: they are the foveation claim, and at demo
+        # resolution the panel shows about eight lines before it has to scroll.
+        "**Rings** (squares) · " + " · ".join(
+            f"{r.cell_m * 100:g} cm to {r.half_width_m:g} m" for r in schedule.rings),
+        "",
+        "| colour | means |",
+        "|---|---|",
+        "| blue → orange | occupied, by height |",
+        "| slate | free · seen and clear |",
+        "| violet | unknown · never free |",
+        f"| red circle | blind cone {blind_cone_m:.2f} m |",
+        "| red dots | moving (ghosts) |",
+        "",
+        "**Map** · one point per cell, sized to its ring",
+    ]
+    rows += ["", f"**Point cloud** · coloured by `{color_by}`"]
+    if palette_legend:
+        rows += ["", palette_legend]
+    if features:
+        rows += [
+            "",
+            f"**Features** · §7.4 / §7.5, refreshed every {feature_interval} frames",
+            "",
+            "| colour | meaning |",
+            "|---|---|",
+            "| orange boxes | curbs, standing at their measured height |",
+            "| vermillion boxes | potholes, sunk to their measured depth |",
+            "| dark → light points | drivability confidence, none → full |",
+            "",
+            ("⚑ Ring 3 confidence reads 0 on the live path: beyond ~50 m SemanticKITTI is "
+             "unlabelled, and `run/engine.py` stores unlabelled as class 0 (`car`). Dark there "
+             "means unlabelled, not hazardous."),
+        ]
+    return "\n".join(rows)

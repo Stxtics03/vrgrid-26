@@ -87,11 +87,15 @@ def shot(name, seq, lo, hi, *, warmup=0, color_by="class", palette="semantickitt
     n = 0
     occ_last = 0
     for i in range(start, hi):
+        t0 = time.perf_counter()
         f = make_frame(seq, i)
+        t1 = time.perf_counter()
+        c = None
         if engine is not None:
             c = engine.step(f)
             occ_last = c.occupied if c.occupied else occ_last
-        view.log_frame(f)
+        view.log_frame(f, counters=c, timing_ms={"perception": (t1 - t0) * 1e3,
+                                                 "engine": (time.perf_counter() - t1) * 1e3})
         n += 1
     view.finish()   # the map redraws every MAP_INTERVAL frames; end on the final one
     rr.disconnect()

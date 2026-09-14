@@ -345,7 +345,7 @@ def test_map_redraws_on_the_interval_and_finish_draws_the_final_state(tmp_path, 
 
     assert count("world/points") == 8
     assert count("world/map/occupied") == 3
-    assert count("memory") == 3
+    assert count("panel/status") == 8        # the side panel is never left stale
 
     view.finish()
     assert count("world/map/occupied") == 4
@@ -442,3 +442,98 @@ def test_height_ramp_table_matches_the_exact_ramp():
     assert fast.dtype == np.uint8 and fast.shape == exact.shape
     assert np.abs(fast.astype(int) - exact.astype(int)).max() <= 1
     assert np.array_equal(_height_ramp(z, -1.0, 5.0), _height_ramp_exact(z, -1.0, 5.0))
+
+
+# --------------------------------------------------------------------------
+# the demo layout -- live panels, legend, square rings
+# --------------------------------------------------------------------------
+
+
+def test_status_panel_derives_every_figure_from_the_schedule():
+    from types import SimpleNamespace
+
+    from vrgrid.cell import CELL_BYTES
+    from vrgrid.dash._config import status_markdown, uniform_2_5d_baseline
+
+    sched = load_schedule("5/10/20/40")
+    assert uniform_2_5d_baseline(sched)["bytes"] == (200 / 0.05) ** 2 * CELL_BYTES == 192e6
+    alloc = sched.total_cells * CELL_BYTES
+    md = status_markdown(1284, 52_317, sched, ghost_removal=True,
+                         counters=SimpleNamespace(cleared=12_468, protected=10_748),
+                         totals={"cleared": 521_614, "protected": 429_012, "truncated": 0},
+                         frame_ms=85.0, ground_method="patchworkpp")
+    assert "Frame 1,284" in md and "52,317 occupied" in md
+    assert f"{192e6 / alloc:.1f}× smaller" in md                        # 21.5x, the report's
+    assert f"{dense_3d_baseline(sched)['bytes'] / alloc:,.0f}× smaller" in md   # 286x
+    assert "12,468 cleared, 10,748 spared this frame" in md
+    assert "0 truncated" in md and "cap hit" not in md
+    assert "within the 100 ms budget" in md and "Patchwork++" in md
+    slow = status_markdown(1284, 52_317, sched, ghost_removal=True, frame_ms=116.0)
+    assert "over the 100 ms budget" in slow and "8.6 fps" in slow
+
+    off = status_markdown(5, 10, sched, ghost_removal=False)
+    assert "**OFF**" in off and "Run totals" not in off
+    assert "cap hit" in status_markdown(5, 10, sched, ghost_removal=True,
+                                        totals={"cleared": 1, "protected": 1, "truncated": 7})
+
+
+def test_legend_lists_every_ring_and_the_blind_cone():
+    from vrgrid.dash._config import map_legend_markdown
+
+    sched = load_schedule("5/10/20/40")
+    md = map_legend_markdown(sched, color_by="class", blind_cone_m=blind_cone_radius_m())
+    for r in sched.rings:                   # every ring's cell size AND its reach
+        assert f"{r.cell_m * 100:g} cm to {r.half_width_m:g} m" in md
+    assert f"{blind_cone_radius_m():.2f} m" in md
+    assert "Ring 3 confidence" not in md          # the features note only with --features
+    assert "Ring 3 confidence" in map_legend_markdown(sched, color_by="class",
+                                                      blind_cone_m=3.74, features=True)
+
+
+def test_rings_are_drawn_as_squares_at_their_half_width(tmp_path, monkeypatch):
+    """Ring membership is the L-infinity distance (lattice.ring_of), so the
+    boundary is a square -- a circle understates ring 0's corners by 4.1 m."""
+    import rerun as rr
+    from vrgrid.dash.pipeline_view import PipelineView
+
+    calls = _spy_logs(monkeypatch)
+    sched = load_schedule("5/10/20/40")
+    PipelineView(sched, spawn=False, save_path=str(tmp_path / "rings.rrd"))
+    rings = [(p, a) for p, a in calls if p.startswith("world/vehicle/rings/")]
+    assert len(rings) == len(sched.rings)
+    for (path, strip), ring in zip(rings, sched.rings):
+        assert isinstance(strip, rr.LineStrips3D)
+        pts = strip.strips.as_arrow_array().to_pylist()[0]
+        xy = np.abs(np.array(pts)[:, :2])
+        assert len(pts) == 5 and np.allclose(xy, ring.half_width_m)
+
+
+def test_side_panels_update_every_frame_and_the_layout_is_sent_once(tmp_path, monkeypatch):
+    import rerun as rr
+    from vrgrid.dash.pipeline_view import PipelineView
+    from vrgrid.run.engine import MapEngine
+
+    sent = []
+    real_send = rr.send_blueprint
+    monkeypatch.setattr(rr, "send_blueprint", lambda bp, **kw: (sent.append(bp), real_send(bp, **kw)))
+    sched = load_schedule("5/10/20/40")
+    engine = MapEngine(sched, ghost_removal=True)
+    view = PipelineView(sched, spawn=False, save_path=str(tmp_path / "ui.rrd"), engine=engine)
+    calls = _spy_logs(monkeypatch)
+    for i in range(3):
+        f = _wall_frame(i)
+        c = engine.step(f)
+        view.log_frame(f, counters=c, timing_ms={"perception": 60.0, "engine": 40.0})
+
+    def count(path):
+        return sum(1 for p, _ in calls if p == path)
+
+    assert len(sent) == 1
+    for path in ("panel/status", "stats/frame_ms/perception", "stats/frame_ms/engine",
+                 "stats/frame_ms/dashboard", "stats/frame_ms/total", "stats/frame_ms/budget",
+                 "stats/ghosts/cleared", "stats/ghosts/spared", "stats/ghosts/truncated"):
+        assert count(path) == 3, path
+    assert view._totals["truncated"] == 0
+
+    view.log_frame(_wall_frame(3))           # no counters or timing: still no blank panel
+    assert count("panel/status") == 4 and count("stats/frame_ms/perception") == 3

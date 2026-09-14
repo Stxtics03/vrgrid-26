@@ -211,10 +211,13 @@ def main(argv=None) -> int:
     n, cleared, protected = 0, 0, 0
     truncated_frames, truncated_peak = 0, 0
     ground_method = None
+    t_pull = time.perf_counter()
     for frame in iter_pipeline(args.seq, args.frames, use_patchworkpp=not args.no_patchworkpp,
                                start_frame=args.start_frame):
+        t_frame = time.perf_counter()          # the pull above was perception
         ground_method = frame.ground_method
         counters = engine.step(frame) if engine is not None else None
+        t_step = time.perf_counter()
         if counters is not None:
             cleared += counters.cleared
             protected += counters.protected
@@ -222,8 +225,11 @@ def main(argv=None) -> int:
                 truncated_frames += 1
                 truncated_peak = max(truncated_peak, counters.truncated)
         if view is not None:
-            view.log_frame(frame)
+            view.log_frame(frame, counters=counters,
+                           timing_ms={"perception": (t_frame - t_pull) * 1e3,
+                                      "engine": (t_step - t_frame) * 1e3})
         n += 1
+        t_pull = time.perf_counter()           # the next pull starts now
         if n % 20 == 0:
             msg = f"  frame {frame.index}: {len(frame.points_sensor):,} pts"
             if counters is not None:

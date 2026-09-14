@@ -27,6 +27,8 @@ Ring boundaries and the blind cone are logged under the vehicle transform, so
 they track the vehicle. Points are world-frame and accumulate on the timeline.
 """
 
+import time
+
 import numpy as np
 import rerun as rr
 import rerun.blueprint as rrb
@@ -36,9 +38,10 @@ from vrgrid.grid.features import detect
 
 from ._config import (
     blind_cone_radius_m,
-    memory_overlay_markdown,
+    frame_budget_ms,
+    map_legend_markdown,
     playback_fps,
-    schedule_legend_markdown,
+    status_markdown,
 )
 
 # Every colour below is defined in `palettes.py`, which imports no rerun: the
@@ -160,6 +163,55 @@ def _confidence_ramp(c: np.ndarray) -> np.ndarray:
     return (_CONFIDENCE_STOPS[i] * (1.0 - f) + _CONFIDENCE_STOPS[i + 1] * f).astype(np.uint8)
 
 
+# --- the demo layout -----------------------------------------------------------
+#
+# One fixed layout, saved into every recording, so a baked scene opens the same
+# way on any machine: the map large on the left, four live panels on the right
+# (the §3.9 dashboard of docs/master-v4.md), the entity tree and selection panel
+# collapsed. Expand the left panel for the eye icons -- `world/ghosts` is still
+# the point-cloud ghost toggle.
+#
+# Series colours are Okabe-Ito, the palette the CVD audit already covers.
+_SERIES = {
+    "stats/frame_ms/perception": ("perception", (86, 180, 233)),
+    "stats/frame_ms/engine": ("map engine", (0, 158, 115)),
+    "stats/frame_ms/dashboard": ("dashboard", (230, 159, 0)),
+    "stats/frame_ms/total": ("total", (235, 235, 235)),
+    "stats/frame_ms/budget": ("budget (10 Hz)", (213, 94, 0)),
+    "stats/ghosts/cleared": ("cleared", (0, 158, 115)),
+    "stats/ghosts/spared": ("spared by the guard", (86, 180, 233)),
+    "stats/ghosts/truncated": ("truncated (must stay 0)", (213, 94, 0)),
+}
+
+
+def _demo_blueprint():
+    map_view = rrb.Spatial3DView(
+        name="Map",
+        origin="/world",
+        background=rrb.Background(color=[14, 17, 22]),
+        line_grid=rrb.LineGrid3D(visible=False),
+        # A chase camera behind and above the vehicle, following it. Left to
+        # its default, the view frames the whole 200 m outer ring and the car
+        # is a speck in the middle.
+        eye_controls=rrb.EyeControls3D(position=[-45.0, -30.0, 40.0],
+                                       look_target=[20.0, 0.0, 0.0],
+                                       tracking_entity="/world/vehicle"),
+    )
+    side = rrb.Vertical(
+        rrb.TextDocumentView(name="Live", origin="/panel/status"),
+        rrb.TimeSeriesView(name="Frame time (ms)", origin="/stats/frame_ms"),
+        rrb.TimeSeriesView(name="Ghost removal (cells per frame)", origin="/stats/ghosts"),
+        rrb.TextDocumentView(name="Legend", origin="/panel/legend"),
+        row_shares=[5, 3, 3, 4],
+    )
+    return rrb.Blueprint(
+        rrb.Horizontal(map_view, side, column_shares=[5, 3]),
+        rrb.BlueprintPanel(state="collapsed"),
+        rrb.SelectionPanel(state="collapsed"),
+        rrb.TimePanel(state="collapsed", timeline="frame", fps=playback_fps()),
+    )
+
+
 def legend_markdown(palette: str) -> str:
     """Which raw classes fall into each colour, so nothing is lost in grouping."""
     if palette == "groups":
@@ -250,67 +302,42 @@ class PipelineView:
             rr.save(save_path)
 
         rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
-        # Play the `frame` timeline at the sensor's rate so a baked recording
-        # runs in real time; Rerun otherwise picks its own fps for a sequence
-        # timeline. No views are given, so the viewer keeps its automatic
-        # layout. A viewer too old for `TimePanel(fps=)` keeps its default.
-        try:
-            rr.send_blueprint(rrb.Blueprint(rrb.TimePanel(timeline="frame",
-                                                          fps=playback_fps())))
-        except (AttributeError, TypeError):
-            pass
-        rr.log(
-            "instructions",
-            rr.TextDocument(
-                "Ghost toggle: show/hide the `world/ghosts` entity (eye icon in the "
-                "entity panel).\nvisible = ghost removal OFF (trails behind moving "
-                "objects)\nhidden  = ghost removal ON\n\n"
-                "Map occupancy (when a MapEngine is attached), math §10.1:\n"
-                "  `world/map/occupied`  points sized to the cell, coloured by height\n"
-                "  `world/map/free`      slate points at the ground datum -- looked, clear\n"
-                "  `world/map/unknown`   observed-but-still-unknown cells + the blind "
-                "cone; never-observed cells are not drawn.\n"
-                "Unknown is not free -- they are separate entities on purpose.\n"
-                f"The map layers redraw every {self.map_interval} frame(s); the point "
-                "cloud, ghosts and vehicle update every frame.\n\n"
-                "With `--features` (math §7.4, §7.5):\n"
-                "  `world/map/curbs`      orange boxes standing at the measured rise\n"
-                "  `world/map/potholes`   vermillion boxes sunk to the measured depth\n"
-                "  `world/map/confidence` points above the surface, dark = no "
-                "confidence in drivability, light = full.\n"
-                "These recompute every 20 frames, not every frame: the detector is a "
-                "full-window pass and costs ~1.1 s.\n\n"
-                "⚑ KNOWN BUG, ring 3 confidence: every ring-3 tile reads a FALSE "
-                "0.000. Beyond ~50 m SemanticKITTI has no labels (100% of returns "
-                "in the 50-100 m band on seq 00), and `run/engine.py` maps "
-                "unlabelled to class 0 = `car`, which is not drivable. So ring 3 "
-                "is dark because it is UNLABELLED, not because it is hazardous. "
-                "Live-map path only -- the published per-ring / rho tables use "
-                "`eval/harness.py`, which maps unlabelled to CLASS_UNLABELLED and "
-                "is correct.",
-                media_type=rr.MediaType.MARKDOWN,
-            ),
-            static=True,
-        )
-        rr.log("legend", rr.TextDocument(legend_markdown(palette),
-                                         media_type=rr.MediaType.MARKDOWN), static=True)
-        rr.log("schedules", rr.TextDocument(schedule_legend_markdown(schedule.name),
-                                            media_type=rr.MediaType.MARKDOWN), static=True)
+        # The layout goes out with the first frame (`_send_blueprint`), once the
+        # `frame` timeline exists. Sent here, before any data, the viewer logged
+        # `Timeline "frame" not found` and the playback rate did not take.
+        self._blueprint_sent = False
+        self._budget_ms = frame_budget_ms()
+        self._totals = {"cleared": 0, "protected": 0, "truncated": 0}
+        self._ground_method = None
+        rr.log("panel/legend", rr.TextDocument(
+            map_legend_markdown(
+                schedule, color_by=color_by, blind_cone_m=blind_cone_radius_m(),
+                palette_legend=legend_markdown(palette) if color_by == "class" else None,
+                features=self.features, feature_interval=FEATURE_INTERVAL),
+            media_type=rr.MediaType.MARKDOWN), static=True)
+        for path, (name, rgb) in _SERIES.items():
+            rr.log(path, rr.SeriesLines(colors=[rgb], names=[name], widths=[2.0]), static=True)
         self._log_rings(schedule)
         self._log_blind_cone(blind_cone_radius_m())
 
     def _log_rings(self, schedule):
-        """Ring-boundary circles, straight from the passed `Schedule`. The ring
-        half-widths and cell sizes come from `configs/schedule_*.yaml` via
-        `grid.schedule.load` -- nothing here is hardcoded, and this draws the
-        same rings the engine bins into."""
+        """Ring boundaries, straight from the passed `Schedule`, drawn as
+        SQUARES. Ring membership is the L-infinity distance in the vehicle
+        frame (`lattice.ring_of`, math §6.1 eq. 18), so ring 0 reaches 10 m
+        along the axes and 14.1 m at its corners; the circles drawn here before
+        showed the wrong boundary exactly where foveation is meant to be seen.
+        Logged under the vehicle transform, so they turn with the heading, as
+        membership does. Half-widths and cell sizes come from
+        `configs/schedule_*.yaml` -- nothing here is hardcoded."""
         for ring in schedule.rings:
             hw = ring.half_width_m
-            th = np.linspace(0, 2 * np.pi, 129)
-            strip = np.stack([hw * np.cos(th), hw * np.sin(th), np.zeros_like(th)], axis=1)
+            square = np.array([[hw, hw, 0], [-hw, hw, 0], [-hw, -hw, 0],
+                               [hw, -hw, 0], [hw, hw, 0]], dtype=np.float32)
             rr.log(
                 f"world/vehicle/rings/ring_{ring.ring}_{ring.cell_m * 100:g}cm",
-                rr.LineStrips3D([strip.astype(np.float32)], colors=[220, 220, 220], radii=0.04),
+                # No in-scene label: four labels plus the blind cone's piled up
+                # on top of each other at the vehicle. The Legend lists them.
+                rr.LineStrips3D([square], colors=[200, 205, 212], radii=0.05),
                 static=True,
             )
 
@@ -319,8 +346,7 @@ class PipelineView:
         strip = np.stack([radius_m * np.cos(th), radius_m * np.sin(th), np.zeros_like(th)], axis=1)
         rr.log(
             "world/vehicle/blind_cone",
-            rr.LineStrips3D([strip.astype(np.float32)], colors=[230, 60, 60], radii=0.05,
-                            labels=[f"blind cone {radius_m:.2f} m (unknown, never free)"]),
+            rr.LineStrips3D([strip.astype(np.float32)], colors=[230, 60, 60], radii=0.05),
             static=True,
         )
 
@@ -548,29 +574,50 @@ class PipelineView:
         self._log_potholes(holes)
         self._log_confidence()
 
-    def _log_memory(self):
-        """Per-frame live memory overlay: the real occupied-cell storage now
-        (`occupied count * CELL_BYTES`), the dense-3D baseline derived from the
-        schedule for the same covered volume, and the live ratio. Logged
-        alongside the static `schedules` panel, but updated every frame."""
-        rr.log(
-            "memory",
-            rr.TextDocument(
-                memory_overlay_markdown(self._last_occupied_n, self.schedule),
-                media_type=rr.MediaType.MARKDOWN,
-            ),
-        )
+    def _send_blueprint(self):
+        """The demo layout (`_demo_blueprint`), sent once with the first frame."""
+        self._blueprint_sent = True
+        try:
+            rr.send_blueprint(_demo_blueprint())
+        except (AttributeError, TypeError):   # a viewer too old for the layout API
+            pass
+
+    def _log_stats(self, frame, counters, timing_ms, dashboard_ms):
+        """The side panels: the frame-time and ghost-removal series and the
+        Live status text. Every frame, so no panel is ever blank between map
+        redraws; the occupied count in it is the last redraw's."""
+        timing = dict(timing_ms or {})
+        timing["dashboard"] = dashboard_ms
+        for stage in ("perception", "engine", "dashboard"):
+            if stage in timing:
+                rr.log(f"stats/frame_ms/{stage}", rr.Scalars(timing[stage]))
+        total = sum(timing.values()) if "perception" in timing else None
+        if total is not None:
+            rr.log("stats/frame_ms/total", rr.Scalars(total))
+        rr.log("stats/frame_ms/budget", rr.Scalars(self._budget_ms))
+        if counters is not None:
+            for key in self._totals:
+                self._totals[key] += int(getattr(counters, key))
+            rr.log("stats/ghosts/cleared", rr.Scalars(counters.cleared))
+            rr.log("stats/ghosts/spared", rr.Scalars(counters.protected))
+            rr.log("stats/ghosts/truncated", rr.Scalars(counters.truncated))
+        rr.log("panel/status", rr.TextDocument(
+            status_markdown(frame.index, self._last_occupied_n, self.schedule,
+                            ghost_removal=self.ghost_removal, counters=counters,
+                            totals=self._totals if counters is not None else None,
+                            frame_ms=total, ground_method=self._ground_method,
+                            has_map=self.engine is not None),
+            media_type=rr.MediaType.MARKDOWN))
 
     def log_map(self):
-        """Draw the occupancy layers and the memory overlay at the current
-        time. Called every `map_interval` frames by `log_frame`, and once more
-        by `finish()`. No-op without an engine."""
+        """Draw the occupancy layers at the current time. Called every
+        `map_interval` frames by `log_frame`, and once more by `finish()`.
+        No-op without an engine."""
         if self.engine is None:
             return
         self._log_occupied()   # also refreshes engine.occ_state
         self._log_free()
         self._log_unknown()
-        self._log_memory()
 
     def finish(self):
         """Call once after the loop: redraws the map and the §7.4 / §7.5
@@ -579,8 +626,19 @@ class PipelineView:
         self.log_map()
         self.log_features()
 
-    def log_frame(self, frame):
+    def log_frame(self, frame, counters=None, timing_ms=None):
+        """Draw one frame.
+
+        `counters` is what `MapEngine.step` returned for this frame, and
+        `timing_ms` the caller's `{"perception": ms, "engine": ms}` for it.
+        Both are optional: with them the side panels show live frame time and
+        ghost-removal numbers; without them, what the view can know alone.
+        """
+        t_start = time.perf_counter()
         rr.set_time("frame", sequence=frame.index)
+        if not self._blueprint_sent:
+            self._send_blueprint()
+        self._ground_method = getattr(frame, "ground_method", self._ground_method)
 
         xyz, colors = get_display_points(frame, self.ghost_removal, self.color_by, self.palette)
         rr.log("world/points", rr.Points3D(xyz, colors=colors, radii=0.03))
@@ -607,3 +665,4 @@ class PipelineView:
             rotation=rr.RotationAxisAngle(axis=[0, 0, 1], angle=float(yaw)),
         ))
         rr.log("world/vehicle/marker", rr.Points3D([[0, 0, 0]], colors=[40, 220, 40], radii=0.4))
+        self._log_stats(frame, counters, timing_ms, (time.perf_counter() - t_start) * 1e3)
