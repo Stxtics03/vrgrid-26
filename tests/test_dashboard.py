@@ -320,6 +320,19 @@ def test_dense_map_layers_are_points_sized_to_the_cell(tmp_path, monkeypatch):
     assert np.allclose(np.sort(radii), np.sort(want))
     assert np.unique(np.round(radii, 3)).size >= 2     # more than one cell size
 
+    # close range (ring 0) is red; every other occupied cell keeps its height colour
+    from vrgrid.dash.pipeline_view import _CLOSE_RANGE_RGB, _height_ramp
+
+    slots, _x, _y, z = engine.occupied_cells()
+    r0 = engine.handle.rings[0]
+    close = (slots >= r0.offset) & (slots < r0.offset + r0.slots)
+    packed = occupied.colors.as_arrow_array().to_numpy(zero_copy_only=False).astype(np.uint64)
+    rgb = np.stack([(packed >> 24) & 255, (packed >> 16) & 255, (packed >> 8) & 255],
+                   axis=1).astype(np.uint8)
+    assert close.any() and (~close).any()
+    assert np.all(rgb[close] == np.array(_CLOSE_RANGE_RGB, np.uint8))
+    assert np.array_equal(rgb[~close], _height_ramp(z)[~close])
+
 
 def test_map_redraws_on_the_interval_and_finish_draws_the_final_state(tmp_path, monkeypatch):
     """The map is drawn every `map_interval` frames, the point cloud every

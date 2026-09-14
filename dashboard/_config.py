@@ -290,7 +290,9 @@ def map_legend_markdown(schedule, *, color_by: str, blind_cone_m: float,
     lines = [
         "**Rings** (squares around the car) · " + " · ".join(
             f"{r.cell_m * 100:g} cm to {r.half_width_m:g} m" for r in schedule.rings),
-        ("**Colours** · blue → orange: occupied, by height · slate: free, seen and clear · "
+        (f"**Colours** · red: occupied within {schedule.rings[0].half_width_m:g} m of the car "
+         f"({schedule.rings[0].cell_m * 100:g} cm cells, most accurate) · "
+         "blue → orange: occupied further out, by height · slate: free, seen and clear · "
          "violet: unknown, never free · "
          f"red circle: blind cone {blind_cone_m:.2f} m, the sensor's blind spot right now "
          "(the map inside it is remembered from earlier frames) · red dots: moving (ghosts) · "

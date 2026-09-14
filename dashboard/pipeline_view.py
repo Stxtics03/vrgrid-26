@@ -107,6 +107,12 @@ def _height_ramp(z: np.ndarray, lo: float = _HEIGHT_LO_M, hi: float = _HEIGHT_HI
 _FREE_RGBA = (110, 125, 140, 70)      # slate, ~27% opacity -- recedes behind occupied
 _UNKNOWN_RGBA = (150, 90, 160, 90)    # muted violet, matches the blind-cone "unknown" hue family
 
+# Occupied cells close to the car -- ring 0, the 5 cm cells, the most accurate
+# part of the map -- are drawn red; everything further keeps the height ramp.
+# This red stays >= Delta-E 21 from the ghost highlight under all three CVD
+# simulations in cvd.py, so moving objects do not vanish into it.
+_CLOSE_RANGE_RGB = (230, 40, 20)
+
 # --- §7.4 features and §7.5 confidence -------------------------------------
 #
 # Three more read-only layers over fields `MapEngine.step` already fills. They
@@ -404,6 +410,13 @@ class PipelineView:
             out[sel] = layout.cell_m
         return out
 
+    def _occupied_colours(self, slots: np.ndarray, z: np.ndarray) -> np.ndarray:
+        """Height colours, with ring 0 -- the cells close to the car -- in red."""
+        colours = _height_ramp(z)                        # a fresh array, safe to edit
+        r0 = self.engine.handle.rings[0]
+        colours[(slots >= r0.offset) & (slots < r0.offset + r0.slots)] = _CLOSE_RANGE_RGB
+        return colours
+
     def _centres_world(self, slots: np.ndarray):
         """World-frame `(x, y, z)` for arbitrary slots, via the engine's own
         inverse of `flat_slot`. ego (0, 0) leaves the centres in the world
@@ -435,7 +448,7 @@ class PipelineView:
         centres = np.stack([x, y, z], axis=1).astype(np.float32)
         rr.log(
             "world/map/occupied",
-            rr.Points3D(centres, radii=cell_m / 2.0, colors=_height_ramp(z)),
+            rr.Points3D(centres, radii=cell_m / 2.0, colors=self._occupied_colours(slots, z)),
         )
 
     def _log_free(self):
