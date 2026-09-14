@@ -449,15 +449,12 @@ def test_height_ramp_table_matches_the_exact_ramp():
 # --------------------------------------------------------------------------
 
 
-def test_key_numbers_table_follows_the_deck_and_derives_every_figure():
+def test_live_numbers_table_shows_this_frame_beside_the_whole_run():
     from types import SimpleNamespace
 
-    from vrgrid.cell import CELL_BYTES
-    from vrgrid.dash._config import DECK_MEASURED, status_markdown, uniform_2_5d_baseline
+    from vrgrid.dash._config import status_markdown
 
     sched = load_schedule("5/10/20/40")
-    assert uniform_2_5d_baseline(sched)["bytes"] == (200 / 0.05) ** 2 * CELL_BYTES == 192e6
-    alloc = sched.total_cells * CELL_BYTES
     run = {"n": 8, "perception": 8 * 84.0, "engine": 8 * 55.0, "dashboard": 8 * 13.0,
            "total": 8 * 152.0, "cleared": 50_841, "protected": 56_107, "truncated": 0,
            "peak_occupied": 225_916}
@@ -466,14 +463,32 @@ def test_key_numbers_table_follows_the_deck_and_derives_every_figure():
         counters=SimpleNamespace(cleared=9_214, protected=8_057, truncated=0), run=run,
         timing_ms={"perception": 84.0, "engine": 55.0, "dashboard": 13.0, "total": 152.0},
         ground_method="patchworkpp")
-    # identity and live status
-    assert "SIH26053" in md and "Chronicles.exe" in md
-    assert "Frame 1,284" in md and "ghost removal ON" in md and "Patchwork++" in md
-    assert "| **Frame time** | **152 ms · 6.6 fps** | 152 ms · 6.6 fps |" in md
+    assert "### Frame 1,284" in md and "ghost removal ON" in md and "Patchwork++" in md
+    assert "| Frame time | 152 ms · 6.6 fps | 152 ms · 6.6 fps |" in md
     assert "| Ghost cells removed | 9,214 | 50,841 |" in md
-    assert "| kept by the guard | 8,057 | 56,107 |" in md
-    assert "| skipped by the cap | 0 | 0 |" in md                 # no flag when it is 0
-    assert "**1.67 MB**" in md and "peak 2.71 MB" in md          # 139,143 / 225,916 x 12 B
+    assert "| Kept by the guard | 8,057 | 56,107 |" in md
+    assert "| Skipped by the cap | 0 | 0 |" in md                 # no flag when it is 0
+    # 139,143 / 225,916 cells x 12 B, against the fixed 745,000-cell allocation
+    assert "| Map memory | 1.67 MB | peak 2.71 MB of 8.94 MB |" in md
+    # the static tables are on the Details tab, not repeated every frame
+    assert "Measured" not in md and "Dense" not in md
+
+    off = status_markdown(5, 10, sched, ghost_removal=False)
+    assert "ghost removal OFF" in off and "| Ghost cells removed | off | off |" in off
+    assert "| Frame time | — | — |" in off                       # no timing: a dash, not a zero
+    capped = dict(run, truncated=7)
+    assert "Skipped by the cap ⚑" in status_markdown(5, 10, sched, ghost_removal=True, run=capped)
+
+
+def test_details_tab_follows_the_deck_and_derives_every_figure():
+    from vrgrid.cell import CELL_BYTES
+    from vrgrid.dash._config import DECK_MEASURED, details_markdown, uniform_2_5d_baseline
+
+    sched = load_schedule("5/10/20/40")
+    assert uniform_2_5d_baseline(sched)["bytes"] == (200 / 0.05) ** 2 * CELL_BYTES == 192e6
+    alloc = sched.total_cells * CELL_BYTES
+    md = details_markdown(sched)
+    assert "SIH26053" in md and "Chronicles.exe" in md
     # the deck's memory table, derived from the schedule
     assert "| **vrgrid 5/10/20/40 cm** | **8.94 MB** | **1×** |" in md
     assert f"| Uniform 5 cm 2.5D | 192.00 MB | {192e6 / alloc:.1f}× |" in md          # 21.5x
@@ -482,13 +497,9 @@ def test_key_numbers_table_follows_the_deck_and_derives_every_figure():
     # the deck's measured results and scope limits
     for label, value in DECK_MEASURED:
         assert f"| {label} | {value} |" in md
-    assert f"{blind_cone_radius_m():.2f} m · 8.3 m · 25 m" in md
-
-    off = status_markdown(5, 10, sched, ghost_removal=False)
-    assert "ghost removal OFF" in off and "| Ghost cells removed | off | off |" in off
-    assert "| **Frame time** | **—** | — |" in off                 # no timing: a dash, not a zero
-    capped = dict(run, truncated=7)
-    assert "skipped by the cap ⚑" in status_markdown(5, 10, sched, ghost_removal=True, run=capped)
+    assert f"| Blind cone radius | {blind_cone_radius_m():.2f} m |" in md
+    assert "| 30 cm pothole detectable to | 8.3 m |" in md
+    assert "| Pedestrian motion detectable to | 25 m |" in md
 
 
 def test_legend_strip_names_every_ring_and_the_blind_cone():
@@ -553,16 +564,11 @@ def test_charts_carry_two_lines_each_and_the_table_updates_every_frame(tmp_path,
         return sum(1 for p, _ in calls if p == path)
 
     assert len(sent) == 1
-    for path in ("panel/status", "stats/frame_ms/total", "stats/frame_ms/budget",
-                 "stats/ghosts/cleared", "stats/ghosts/spared",
+    for path in ("panel/status", "stats/ghosts/cleared", "stats/ghosts/spared",
                  "world/follow"):              # the chase camera moves every frame
         assert count(path) == 3, path
     stats = {p for p, _ in calls if p.startswith("stats/")}
-    assert stats == {"stats/frame_ms/total", "stats/frame_ms/budget",
-                     "stats/ghosts/cleared", "stats/ghosts/spared",
-                     "stats/memory_mb/in_use", "stats/memory_mb/allocation"}  # no GPU: no GPU lines
-    memory = [a for p, a in calls if p == "stats/memory_mb/allocation"]
-    assert len(memory) == 3
+    assert stats == {"stats/ghosts/cleared", "stats/ghosts/spared"}   # no GPU: no GPU lines
     # map_interval=2 over 3 timed frames: one full window, so exactly one feed line
     feed = [a for p, a in calls if p == "panel/feed/frames"]
     assert len(feed) == 1 and isinstance(feed[0], rr.TextLog)
@@ -571,7 +577,7 @@ def test_charts_carry_two_lines_each_and_the_table_updates_every_frame(tmp_path,
     assert count("world/trajectory") == 1          # frames 0 and 2 redraw; frame 0 has 1 point
 
     view.log_frame(_wall_frame(3))           # no counters or timing: still no blank table
-    assert count("panel/status") == 4 and count("stats/frame_ms/total") == 3
+    assert count("panel/status") == 4 and count("stats/ghosts/cleared") == 3
     view.finish()
     assert count("world/trajectory") == 2
 
@@ -609,8 +615,8 @@ def test_gpu_reading_reaches_its_chart_and_the_live_table(tmp_path, monkeypatch)
     assert paths.count("stats/gpu_pct/usage") == 1 and paths.count("stats/gpu_pct/memory") == 1
     assert view._run["gpu_peak_pct"] == 37.0
     md = status_markdown(1, 10, sched, ghost_removal=True, run=view._run, gpu=reading)
-    assert "| GPU · RTX 4050 Laptop GPU | 37% · 1.5 / 6.0 GB | peak 37% |" in md
-    assert "GPU ·" not in status_markdown(1, 10, sched, ghost_removal=True)   # no reading, no row
+    assert "| GPU (RTX 4050 Laptop GPU) | 37% · 1.5 / 6.0 GB | peak 37% |" in md
+    assert "GPU" not in status_markdown(1, 10, sched, ghost_removal=True)   # no reading, no row
 
 
 def test_feed_line_colour_follows_the_worst_frame_in_its_window(tmp_path, monkeypatch):

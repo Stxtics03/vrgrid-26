@@ -44,7 +44,7 @@ def playback_fps() -> float:
 
 def frame_budget_ms() -> float:
     """The per-frame budget: one sensor period, `1e3 * fusion.frame_dt_s`
-    (100 ms at KITTI's 10 Hz). The line the frame-time chart is read against."""
+    (100 ms at KITTI's 10 Hz). What the status feed colours each window against."""
     return 1e3 * float(load_thresholds()["fusion"]["frame_dt_s"])
 
 
@@ -220,16 +220,14 @@ def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_remova
                     counters=None, run: dict | None = None, timing_ms: dict | None = None,
                     ground_method: str | None = None, has_map: bool = True,
                     gpu=None) -> str:
-    """The side panel, laid out after the SIH26053 deck: three short tables.
+    """The "Live" tab's numbers: one heading, one line of context, one table.
 
-    `gpu` is a `gpu_stats.GpuReading` or None; with one, the Live table gains a
-    row for the GPU drawing the dashboard (usage and memory now, peak usage).
-
-    1. Live -- this frame beside the whole run: frame time against the budget,
-       ghost cells removed / kept by the guard / skipped by the cap, map memory.
-    2. Memory at the same extent -- the deck's slide-4 table, derived from the
-       schedule exactly as `scripts/memory_table.py` derives it.
-    3. Measured -- the deck's slide-4/5 results and scope limits (DECK_MEASURED).
+    Only what changes while the demo plays -- this frame beside the whole run:
+    frame time, the GPU drawing the dashboard (when `gpu`, a
+    `gpu_stats.GpuReading`, is given), ghost cells removed / kept by the guard /
+    skipped by the cap, and map memory against its fixed allocation. The
+    memory comparison and the deck's measured results never change, so they
+    live on the "Details" tab (`details_markdown`), logged once.
 
     `counters` is this frame's `StepCounters`; `timing_ms` this frame's
     `{"perception", "engine", "dashboard", "total"}`; `run` the view's running
@@ -240,22 +238,21 @@ def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_remova
               " · ground Patchwork++" if ground_method == "patchworkpp" else
               " · ⚑ ground: semantic-class fallback")
     rows = [
-        "**VRgrid · foveated 2.5D LiDAR map** · SIH26053 · Chronicles.exe",
+        f"### Frame {frame_index:,}",
         "",
-        (f"**Frame {frame_index:,}** · ghost removal {'ON' if ghost_removal else 'OFF'}{ground}"
-         f" · budget {budget:.0f} ms"),
+        f"ghost removal {'ON' if ghost_removal else 'OFF'}{ground} · budget {budget:.0f} ms",
         "",
-        "| Live | this frame | whole run |",
+        "| | this frame | whole run |",
         "|---|---|---|",
     ]
     t = timing_ms or {}
     n = (run or {}).get("n", 0)
     avg_total = run["total"] / n if run and n else None
-    rows.append(f"| **Frame time** | **{_rate(t.get('total'))}** | {_rate(avg_total)} |")
+    rows.append(f"| Frame time | {_rate(t.get('total'))} | {_rate(avg_total)} |")
     if gpu is not None:
         peak = (run or {}).get("gpu_peak_pct")
         rows.append(
-            f"| GPU · {gpu.name.replace('NVIDIA GeForce ', '')} | {gpu.util_pct:.0f}% · "
+            f"| GPU ({gpu.name.replace('NVIDIA GeForce ', '')}) | {gpu.util_pct:.0f}% · "
             f"{gpu.mem_used_mib / 1024:.1f} / {gpu.mem_total_mib / 1024:.1f} GB | "
             + ("—" if peak is None else f"peak {peak:.0f}%") + " |")
 
@@ -273,64 +270,90 @@ def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_remova
         capped = run is not None and run["truncated"] > 0
         rows += [
             f"| Ghost cells removed | {now('cleared')} | {total('cleared')} |",
-            f"| kept by the guard | {now('protected')} | {total('protected')} |",
-            (f"| skipped by the cap{' ⚑' if capped else ''} | {now('truncated')} | "
+            f"| Kept by the guard | {now('protected')} | {total('protected')} |",
+            (f"| Skipped by the cap{' ⚑' if capped else ''} | {now('truncated')} | "
              f"{total('truncated')} |"),
         ]
     else:
         rows.append("| Ghost cells removed | off | off |")
     peak = max(int((run or {}).get("peak_occupied", 0)), int(n_occupied))
-    rows.append(f"| **Map memory** | **{_fmt_bytes(int(n_occupied) * CELL_BYTES)}** | "
-                f"peak {_fmt_bytes(peak * CELL_BYTES)} |")
+    rows.append(f"| Map memory | {_fmt_bytes(int(n_occupied) * CELL_BYTES)} | "
+                f"peak {_fmt_bytes(peak * CELL_BYTES)} of "
+                f"{_fmt_bytes(schedule.total_cells * CELL_BYTES)} |")
+    return "\n".join(rows)
 
+
+def details_markdown(schedule) -> str:
+    """The "Details" tab: what does not change while the demo plays.
+
+    1. Memory at the same extent -- the deck's slide-4 table, derived from the
+       schedule exactly as `scripts/memory_table.py` derives it.
+    2. Measured -- the deck's slide-4/5 results and scope limits (DECK_MEASURED).
+    """
     alloc = schedule.total_cells * CELL_BYTES
     uniform = uniform_2_5d_baseline(schedule)["bytes"]
     dense = dense_3d_baseline(schedule)["bytes"]
     base = f"{schedule.base_cell_m * 100:g} cm"
     cells = "/".join(f"{r.cell_m * 100:g}" for r in schedule.rings)
-    rows += [
+    rows = [
+        "**VRgrid · foveated 2.5D LiDAR map** · SIH26053 · Chronicles.exe",
         "",
-        "| Memory, same extent | size | vs vrgrid |",
+        "### Memory at the same extent",
+        "",
+        "| map | size | vs vrgrid |",
         "|---|---|---|",
         f"| **vrgrid {cells} cm** | **{_fmt_bytes(alloc)}** | **1×** |",
         f"| Uniform {base} 2.5D | {_fmt_bytes(uniform)} | {uniform / alloc:.1f}× |",
         f"| {SPARSE_3D_ROW[0]} | {SPARSE_3D_ROW[1]} | {SPARSE_3D_ROW[2]} |",
         f"| Dense {base} 3D | {_fmt_bytes(dense)} | {dense / alloc:,.0f}× |",
         "",
-        "| Measured | |",
+        "### Measured",
+        "",
+        "| result | value |",
         "|---|---|",
     ]
     rows += [f"| {label} | {value} |" for label, value in DECK_MEASURED]
-    rows.append(
-        f"| Blind cone · 30 cm pothole · pedestrian motion | {blind_cone_radius_m():.2f} m · "
-        f"{POTHOLE_30CM_RANGE_M:g} m · {PEDESTRIAN_MOTION_RANGE_M:g} m |")
+    rows += [
+        f"| Blind cone radius | {blind_cone_radius_m():.2f} m |",
+        f"| 30 cm pothole detectable to | {POTHOLE_30CM_RANGE_M:g} m |",
+        f"| Pedestrian motion detectable to | {PEDESTRIAN_MOTION_RANGE_M:g} m |",
+    ]
     return "\n".join(rows)
 
 
 def map_legend_markdown(schedule, *, color_by: str, blind_cone_m: float,
                         palette_note: str | None = None, features: bool = False,
                         feature_interval: int = 20) -> str:
-    """The legend strip under the map: two or three wrapped lines, logged once.
-
-    A strip rather than a side panel so the side column holds the numbers and
-    the charts, and so the key sits right beside the thing it explains. Ring
-    sizes come from the schedule; nothing here is typed by hand.
+    """The legend on the "Details" tab, logged once: one short list per topic,
+    one item per line, so it reads at a glance instead of as a wrapped strip.
+    Ring sizes come from the schedule; nothing here is typed by hand.
     """
     points = f"points coloured by `{color_by}`" + (f" ({palette_note})" if palette_note else "")
-    lines = [
-        "**Rings** (squares around the car) · " + " · ".join(
-            f"{r.cell_m * 100:g} cm to {r.half_width_m:g} m" for r in schedule.rings),
-        ("**Colours** · blue → orange: occupied, by height · slate: free, seen and clear · "
-         "violet: unknown, never free · "
-         f"red circle: blind cone {blind_cone_m:.2f} m, the sensor's blind spot right now "
-         "(the map inside it is remembered from earlier frames) · red dots: moving (ghosts) · "
-         f"white arrow: the car · amber line: path driven · {points}"),
+    lines = ["### Rings (squares around the car)", ""]
+    lines += [f"- ring {i}: {r.cell_m * 100:g} cm to {r.half_width_m:g} m"
+              for i, r in enumerate(schedule.rings)]
+    lines += [
+        "",
+        "### Colours",
+        "",
+        "- **blue → orange** occupied, by height",
+        "- **slate** free: seen and clear",
+        "- **violet** unknown: never assumed free",
+        (f"- **red circle** blind cone {blind_cone_m:.2f} m, the sensor's blind spot right now "
+         "(the map inside it is remembered from earlier frames)"),
+        "- **red dots** moving points (ghosts)",
+        f"- **white arrow** the car · **amber line** path driven · {points}",
     ]
     if features:
-        lines.append(
-            f"**Features** (refreshed every {feature_interval} frames) · orange boxes: curbs at "
-            "their measured height · vermillion boxes: potholes at their measured depth · "
-            "dark → light points: drivability confidence. ⚑ Ring 3 confidence reads 0 on the "
-            "live path: beyond ~50 m SemanticKITTI is unlabelled and `run/engine.py` stores "
-            "unlabelled as class 0 (`car`), so dark there means unlabelled, not hazardous.")
-    return "\n\n".join(lines)
+        lines += [
+            "",
+            f"### Features (refreshed every {feature_interval} frames)",
+            "",
+            "- **orange boxes** curbs at their measured height",
+            "- **vermillion boxes** potholes at their measured depth",
+            "- **dark → light points** drivability confidence",
+            ("- ⚑ Ring 3 confidence reads 0 on the live path: beyond ~50 m SemanticKITTI is "
+             "unlabelled and `run/engine.py` stores unlabelled as class 0 (`car`), so dark there "
+             "means unlabelled, not hazardous."),
+        ]
+    return "\n".join(lines)

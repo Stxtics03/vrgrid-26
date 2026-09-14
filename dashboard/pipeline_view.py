@@ -38,6 +38,7 @@ from vrgrid.grid.features import detect
 
 from ._config import (
     blind_cone_radius_m,
+    details_markdown,
     frame_budget_ms,
     map_legend_markdown,
     playback_fps,
@@ -167,23 +168,20 @@ def _confidence_ramp(c: np.ndarray) -> np.ndarray:
 # --- the demo layout -----------------------------------------------------------
 #
 # One fixed layout, saved into every recording, so a baked scene opens the same
-# way on any machine: the map large on the left, four live panels on the right
-# (the §3.9 dashboard of docs/master-v4.md), the entity tree and selection panel
-# collapsed. Expand the left panel for the eye icons -- `world/ghosts` is still
-# the point-cloud ghost toggle.
+# way on any machine: two map views on the left (the whole map from above, and
+# a follow camera close behind the car), and on the right two tabs -- "Live"
+# (numbers, GPU chart, ghost chart, status feed) and "Details" (the memory
+# comparison, measured results and legend, which never change). The entity tree
+# and selection panel are collapsed; expand the left panel for the eye icons --
+# `world/ghosts` is still the point-cloud ghost toggle.
 #
 # Two lines per chart, no more. Five overlapping lines with a legend box over
-# the data read as noise on a projector; the per-stage split and the cap count
-# live in the Key numbers table instead, and each chart title names its line
-# colours so no legend box is needed. Okabe-Ito colours, which the CVD audit
-# already covers.
+# the data read as noise on a projector; frame time and memory are numbers in
+# the Live table instead, and each chart title names its line colours so no
+# legend box is needed. Okabe-Ito colours, which the CVD audit already covers.
 _SERIES = {
-    "stats/frame_ms/total": ("frame time", (235, 235, 235)),
-    "stats/frame_ms/budget": ("budget", (213, 94, 0)),
     "stats/ghosts/cleared": ("removed", (0, 158, 115)),
     "stats/ghosts/spared": ("kept by the guard", (86, 180, 233)),
-    "stats/memory_mb/in_use": ("map memory in use", (86, 180, 233)),
-    "stats/memory_mb/allocation": ("fixed allocation", (230, 159, 0)),
     "stats/gpu_pct/usage": ("GPU usage", (0, 158, 115)),
     "stats/gpu_pct/memory": ("GPU memory", (204, 121, 167)),
 }
@@ -207,76 +205,61 @@ _MARKER_RGB = (240, 240, 240)
 
 
 def _demo_blueprint(schedule):
-    map_view = rrb.Spatial3DView(
-        name="Map",
-        # The view lives in `/world/follow`, a frame that carries the vehicle's
-        # POSITION only (see `log_frame`), and shows everything under /world.
-        # So the camera below is a chase camera that goes where the car goes.
-        # `tracking_entity` with a fixed eye did not follow: by frame 1,000 of
-        # seq 00 the car was 370 m away and the view still sat at the origin.
-        # Position but not heading, on purpose: a camera bolted to the car's
-        # yaw swings on every small heading change between 10 Hz frames.
-        origin="/world/follow",
-        contents="/world/**",
-        background=rrb.Background(color=[14, 17, 22]),
-        line_grid=rrb.LineGrid3D(visible=False),
-        eye_controls=rrb.EyeControls3D(position=[-45.0, -30.0, 40.0],
-                                       look_target=[20.0, 0.0, 0.0]),
+    # Both map views live in `/world/follow`, a frame that carries the vehicle's
+    # POSITION only (see `log_frame`), and show everything under /world. So both
+    # cameras go where the car goes. `tracking_entity` with a fixed eye did not
+    # follow: by frame 1,000 of seq 00 the car was 370 m away and the view still
+    # sat at the origin. Position but not heading, on purpose: a camera bolted
+    # to the car's yaw swings on every small heading change between 10 Hz frames.
+    def map_view(name, position, look_target):
+        return rrb.Spatial3DView(
+            name=name, origin="/world/follow", contents="/world/**",
+            background=rrb.Background(color=[14, 17, 22]),
+            line_grid=rrb.LineGrid3D(visible=False),
+            eye_controls=rrb.EyeControls3D(position=position, look_target=look_target))
+
+    maps = rrb.Vertical(
+        # High and nearly straight down: the whole 200 m map, all four rings.
+        map_view("Overview · the whole map, all four rings", [-20.0, 0.0, 150.0], [0.0, 0.0, 0.0]),
+        # Low behind the car: the fine 5 cm ring up close.
+        map_view("Around the car · follow camera", [-30.0, -18.0, 22.0], [15.0, 0.0, 0.0]),
+        row_shares=[1, 1],
     )
-    # Under the map, side by side: the static legend and the coloured status feed.
-    map_column = rrb.Vertical(
-        map_view,
-        rrb.Horizontal(
-            rrb.TextDocumentView(name="Legend", origin="/panel/legend"),
-            # Body only: each line already names its frames, the path is always
-            # /panel/feed, and the colour already says green / yellow / red.
-            # With every column showing, the strip had room for one line.
-            rrb.TextLogView(
-                name="Status feed", origin="/panel/feed",
-                columns=rrb.archetypes.TextLogColumns(
-                    timeline_columns=[rrb.components.TimelineColumn("frame", visible=False)],
-                    text_log_columns=[
-                        rrb.components.TextLogColumn("LogLevel", visible=False),
-                        rrb.components.TextLogColumn("EntityPath", visible=False),
-                        rrb.components.TextLogColumn("Body", visible=True),
-                    ],
-                ),
-            ),
-            column_shares=[1, 1],
-        ),
-        row_shares=[5, 1.8],       # 1.3 showed one feed line
-    )
+
     no_legend = rrb.PlotLegend(visible=False)     # the titles name the colours
-    # Frame time on a fixed 0 .. 3x budget axis. Auto-scaled it started near
-    # 100 ms, which turned ordinary jitter into cliffs and hid how far over or
-    # under the budget line a frame really sits.
-    budget_ms = frame_budget_ms()
-    alloc_mb = schedule.total_cells * CELL_BYTES / 1e6
-    charts = rrb.Grid(
-        # Titles fit a quarter-width panel (~26 characters) and name the one
-        # line that is not obvious; the longer "white: ... orange: ..." titles
-        # were truncated exactly where the colours were named.
-        rrb.TimeSeriesView(name="Frame ms · orange = budget",
-                           origin="/stats/frame_ms", plot_legend=no_legend,
-                           axis_y=rrb.ScalarAxis(range=(0.0, 3.0 * budget_ms))),
-        rrb.TimeSeriesView(name="Ghosts · green = removed",
-                           origin="/stats/ghosts", plot_legend=no_legend),
-        # Axis to just above the allocation, so "never grows" reads as headroom.
-        rrb.TimeSeriesView(name="Memory MB · orange = cap",
-                           origin="/stats/memory_mb", plot_legend=no_legend,
-                           axis_y=rrb.ScalarAxis(range=(0.0, 1.15 * alloc_mb))),
-        rrb.TimeSeriesView(name="GPU % · pink = memory",
+    live = rrb.Vertical(
+        rrb.TextDocumentView(name="Live numbers", origin="/panel/status"),
+        rrb.TimeSeriesView(name="GPU rendering % · green usage · pink memory",
                            origin="/stats/gpu_pct", plot_legend=no_legend,
                            axis_y=rrb.ScalarAxis(range=(0.0, 100.0))),
-        grid_columns=2,
+        rrb.TimeSeriesView(name="Ghost cells per frame · green removed · blue kept",
+                           origin="/stats/ghosts", plot_legend=no_legend),
+        # Body only: each line already names its frames, the path is always
+        # /panel/feed, and the colour already says green / yellow / red.
+        rrb.TextLogView(
+            name="Status feed", origin="/panel/feed",
+            columns=rrb.archetypes.TextLogColumns(
+                timeline_columns=[rrb.components.TimelineColumn("frame", visible=False)],
+                text_log_columns=[
+                    rrb.components.TextLogColumn("LogLevel", visible=False),
+                    rrb.components.TextLogColumn("EntityPath", visible=False),
+                    rrb.components.TextLogColumn("Body", visible=True),
+                ],
+            ),
+        ),
+        row_shares=[3.6, 2, 2, 2],     # 3 cut the table's last row (Map memory)
+        name="Live",
     )
-    side = rrb.Vertical(
-        rrb.TextDocumentView(name="Key numbers", origin="/panel/status"),
-        charts,
-        row_shares=[13, 6],        # three tables above (12 cut the last row), 2x2 charts below
+    # What never changes while the demo plays, on its own tab so the Live tab
+    # can stay roomy instead of packing three tables above the charts.
+    details = rrb.Vertical(
+        rrb.TextDocumentView(name="Memory and results", origin="/panel/details"),
+        rrb.TextDocumentView(name="Legend", origin="/panel/legend"),
+        row_shares=[1.5, 1],       # 1:1 cut the Measured table; the legend had room to spare
+        name="Details",
     )
     return rrb.Blueprint(
-        rrb.Horizontal(map_column, side, column_shares=[5, 3]),
+        rrb.Horizontal(maps, rrb.Tabs(live, details, active_tab=0), column_shares=[3, 2]),
         rrb.BlueprintPanel(state="collapsed"),
         rrb.SelectionPanel(state="collapsed"),
         # Starts playing and loops, so a scene keeps running unattended for as
@@ -412,6 +395,8 @@ class PipelineView:
                 palette_note=palette_note, features=self.features,
                 feature_interval=FEATURE_INTERVAL),
             media_type=rr.MediaType.MARKDOWN), static=True)
+        rr.log("panel/details", rr.TextDocument(details_markdown(schedule),
+                                                media_type=rr.MediaType.MARKDOWN), static=True)
         for path, (name, rgb) in _SERIES.items():
             rr.log(path, rr.SeriesLines(colors=[rgb], names=[name], widths=[2.5]), static=True)
         self._log_rings(schedule)
@@ -716,31 +701,23 @@ class PipelineView:
                rr.LineStrips3D([np.stack(self._trail)], colors=[_TRAIL_RGB], radii=0.12))
 
     def _log_stats(self, frame, counters, timing_ms, dashboard_ms):
-        """The side column: two chart series each and the Key numbers table.
-        Every frame, so nothing is ever blank between map redraws; the
-        occupied count in the table is the last redraw's."""
+        """The Live tab: its two charts and its numbers table. Every frame, so
+        nothing is ever blank between map redraws; the occupied count in the
+        table is the last redraw's."""
         timing = None
         if timing_ms and "perception" in timing_ms:
             timing = {"perception": timing_ms["perception"],
                       "engine": timing_ms.get("engine", 0.0), "dashboard": dashboard_ms}
             timing["total"] = sum(timing.values())
-            rr.log("stats/frame_ms/total", rr.Scalars(timing["total"]))
             self._run["n"] += 1
             for key, value in timing.items():
                 self._run[key] += value
-        rr.log("stats/frame_ms/budget", rr.Scalars(self._budget_ms))
         if counters is not None:
             for key in ("cleared", "protected", "truncated"):
                 self._run[key] += int(getattr(counters, key))
             rr.log("stats/ghosts/cleared", rr.Scalars(counters.cleared))
             rr.log("stats/ghosts/spared", rr.Scalars(counters.protected))
         self._run["peak_occupied"] = max(self._run["peak_occupied"], self._last_occupied_n)
-
-        # Memory gauge: storage in use now against the allocation it can never exceed.
-        if self.engine is not None:
-            rr.log("stats/memory_mb/in_use",
-                   rr.Scalars(self._last_occupied_n * CELL_BYTES / 1e6))
-            rr.log("stats/memory_mb/allocation", rr.Scalars(self._alloc_mb))
 
         # GPU: the sampler's latest snapshot, never a blocking call on this path.
         gpu = self._gpu.latest()
