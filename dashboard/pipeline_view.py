@@ -52,10 +52,15 @@ from ._config import (
 from .palettes import (
     _CLASS_LUT,
     _GROUP_LUT,
+    BLIND_CONE_RGB,
+    FREE_RGB,
     GHOST_RGB,
     GROUP_MEMBERS,
     GROUP_NAMES,
     GROUP_RGB,
+    RING_RGB,
+    TRAIL_RGB,
+    UNKNOWN_RGB,
 )
 
 PALETTES = ("semantickitti", "groups")
@@ -98,14 +103,14 @@ def _height_ramp(z: np.ndarray, lo: float = _HEIGHT_LO_M, hi: float = _HEIGHT_HI
 # Occupancy layers are drawn as three visually distinct things -- "unknown is
 # not free" is a hard invariant (CLAUDE.md, math §10.1) and the view has to keep
 # them apart:
-#   OCCUPIED  elevation-ramped solid boxes at the cell's height (`_log_occupied`)
+#   OCCUPIED  points at the cell's height, coloured by ring (`_log_occupied`)
 #   FREE      flat translucent slate tiles at the ground datum (`_log_free`) --
 #             "the sensor looked here and it is clear"
 #   UNKNOWN   the blind cone, plus any cell the map still calls UNKNOWN despite
 #             having been observed (`_log_unknown`); never-observed allocation
 #             slots are left undrawn, they are not information
-_FREE_RGBA = (110, 125, 140, 70)      # slate, ~27% opacity -- recedes behind occupied
-_UNKNOWN_RGBA = (150, 90, 160, 90)    # muted violet, matches the blind-cone "unknown" hue family
+_FREE_RGBA = (*FREE_RGB, 70)          # dark blue-grey, ~27% opacity -- recedes behind occupied
+_UNKNOWN_RGBA = (*UNKNOWN_RGB, 90)    # muted violet, the blind cone's "unknown" hue family
 
 # --- §7.4 features and §7.5 confidence -------------------------------------
 #
@@ -183,7 +188,7 @@ _SERIES = {
     "stats/ghosts/spared": ("kept by the guard", (86, 180, 233)),
 }
 
-_TRAIL_RGB = (240, 180, 60)
+_TRAIL_RGB = TRAIL_RGB   # sky blue: the old amber disappeared into the orange ring
 
 # The vehicle marker: one flat white triangle pointing along +x (forward),
 # 3.2 m long and 2 m wide, lifted 25 cm so it sits on top of the ground cells.
@@ -390,7 +395,8 @@ class PipelineView:
         strip = np.stack([radius_m * np.cos(th), radius_m * np.sin(th), np.zeros_like(th)], axis=1)
         rr.log(
             "world/vehicle/blind_cone",
-            rr.LineStrips3D([strip.astype(np.float32)], colors=[230, 60, 60], radii=0.05),
+            # Violet, the "unknown" family: red now means the most accurate ring.
+            rr.LineStrips3D([strip.astype(np.float32)], colors=[BLIND_CONE_RGB], radii=0.05),
             static=True,
         )
 
@@ -403,6 +409,17 @@ class PipelineView:
             sel = (slots >= layout.offset) & (slots < layout.offset + layout.slots)
             out[sel] = layout.cell_m
         return out
+
+    def _ring_rgb_per_slot(self, slots: np.ndarray) -> np.ndarray:
+        """(N, 3) uint8 colour per slot by the ring that stores it: red at 5 cm
+        close in, fading to grey at 40 cm (`palettes.RING_RGB`), so resolution
+        -- and with it the measured accuracy -- reads straight off the map. A
+        schedule with more rings than colours reuses the last one."""
+        idx = np.zeros(len(slots), dtype=np.intp)
+        for level, layout in enumerate(self.engine.handle.rings):
+            sel = (slots >= layout.offset) & (slots < layout.offset + layout.slots)
+            idx[sel] = min(level, len(RING_RGB) - 1)
+        return RING_RGB[idx]
 
     def _centres_world(self, slots: np.ndarray):
         """World-frame `(x, y, z)` for arbitrary slots, via the engine's own
@@ -435,7 +452,7 @@ class PipelineView:
         centres = np.stack([x, y, z], axis=1).astype(np.float32)
         rr.log(
             "world/map/occupied",
-            rr.Points3D(centres, radii=cell_m / 2.0, colors=_height_ramp(z)),
+            rr.Points3D(centres, radii=cell_m / 2.0, colors=self._ring_rgb_per_slot(slots)),
         )
 
     def _log_free(self):

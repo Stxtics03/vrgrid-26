@@ -15,6 +15,16 @@ from vrgrid.cell import CELL_BYTES
 from vrgrid.grid.schedule import CONFIG_DIR, load_thresholds
 from vrgrid.grid.schedule import load as _load_schedule
 
+from .palettes import RING_COLOUR_NAMES
+
+# Median height RMSE per ring, in cm, over all 11 labelled sequences:
+# docs/known-limitations.md §2b (40 frames each, Patchwork++). Ring 1 and ring 2
+# are the medians that section states (3.53 and 9.48 cm); ring 0's is the median
+# of its r0 column (1.61 cm); ring 3 is not scored in that table, so it has none.
+# Rounded to one decimal: §7 notes the second decimal is not earned. Measured on
+# 5_10_20_40 only, so any other schedule shows no error figure.
+RING_MEDIAN_ERROR_CM = {"5_10_20_40": (1.6, 3.5, 9.5)}
+
 # Bytes per voxel assumed for the dense-3D baseline. A dense voxel needs only an
 # occupancy state, so 1 B is the charitable figure for the baseline -- the same
 # convention `scripts/memory_table.py` uses for the report's 286x headline.
@@ -287,14 +297,20 @@ def map_legend_markdown(schedule, *, color_by: str, blind_cone_m: float,
     sizes come from the schedule; nothing here is typed by hand.
     """
     points = f"points coloured by `{color_by}`" + (f" ({palette_note})" if palette_note else "")
+    errors = RING_MEDIAN_ERROR_CM.get(schedule.name, ())
+
+    def ring_label(i, r):
+        colour = RING_COLOUR_NAMES[min(i, len(RING_COLOUR_NAMES) - 1)]
+        error = f" (≈{errors[i]:g} cm error)" if i < len(errors) else ""
+        return f"{colour} {r.cell_m * 100:g} cm to {r.half_width_m:g} m{error}"
+
     lines = [
-        "**Rings** (squares around the car) · " + " · ".join(
-            f"{r.cell_m * 100:g} cm to {r.half_width_m:g} m" for r in schedule.rings),
-        ("**Colours** · blue → orange: occupied, by height · slate: free, seen and clear · "
-         "violet: unknown, never free · "
-         f"red circle: blind cone {blind_cone_m:.2f} m, the sensor's blind spot right now "
-         "(the map inside it is remembered from earlier frames) · red dots: moving (ghosts) · "
-         f"white arrow: the car · amber line: path driven · {points}"),
+        ("**Rings** · occupied cells are coloured by ring, most accurate first · "
+         + " · ".join(ring_label(i, r) for i, r in enumerate(schedule.rings))),
+        ("**Colours** · dark grey: free, seen and clear · violet: unknown, never free · "
+         f"violet circle: blind cone {blind_cone_m:.2f} m, the sensor's blind spot right now "
+         "(the map inside it is remembered from earlier frames) · pink dots: moving (ghosts) · "
+         f"white arrow: the car · blue line: path driven · {points}"),
     ]
     if features:
         lines.append(

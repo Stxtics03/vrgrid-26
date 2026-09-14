@@ -320,6 +320,18 @@ def test_dense_map_layers_are_points_sized_to_the_cell(tmp_path, monkeypatch):
     assert np.allclose(np.sort(radii), np.sort(want))
     assert np.unique(np.round(radii, 3)).size >= 2     # more than one cell size
 
+    # coloured by ring: each occupied cell carries its own ring's colour
+    from vrgrid.dash.palettes import RING_RGB
+
+    slots = engine.occupied_slots()
+    ring = np.zeros(len(slots), dtype=np.intp)
+    for level, layout in enumerate(engine.handle.rings):
+        ring[(slots >= layout.offset) & (slots < layout.offset + layout.slots)] = level
+    packed = occupied.colors.as_arrow_array().to_numpy(zero_copy_only=False).astype(np.uint64)
+    rgb = np.stack([(packed >> 24) & 255, (packed >> 16) & 255, (packed >> 8) & 255], axis=1)
+    assert np.array_equal(rgb, RING_RGB[ring].astype(np.uint64))
+    assert len(np.unique(ring)) >= 2                   # the wall and the ground span rings
+
 
 def test_map_redraws_on_the_interval_and_finish_draws_the_final_state(tmp_path, monkeypatch):
     """The map is drawn every `map_interval` frames, the point cloud every
