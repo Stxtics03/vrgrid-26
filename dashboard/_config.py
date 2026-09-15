@@ -422,26 +422,19 @@ def map_legend_markdown(schedule, *, color_by: str, blind_cone_m: float,
     """
     points = (f"LiDAR points coloured by `{color_by}`"
               + (f" ({palette_note})" if palette_note else ""))
-    lines = [
-        "### Map colour modes (the tabs above the map)",
-        "",
-        "- **Rings** (default): each cell in its ring's colour, as a flat tile of that cell's size",
-        f"- **Semantic class**: each cell in its class colour, with the {points}",
-        "- **Height**: each cell by height, blue low → red high",
-        "",
-        "### Rings (squares around the car)",
-        "",
-    ]
+    lines = ["### Rings (squares around the car)", ""]
     lines += [f"- {r.cell_m * 100:g} cm cells, out to {r.half_width_m:g} m" for r in schedule.rings]
     lines += [
         "",
-        "### Other marks",
+        "### Map",
         "",
-        "- **red dots** moving objects · **white arrow** the car · **grey line** path driven",
-        (f"- **orange circle** blind spot {blind_cone_m:.2f} m: the sensor cannot see the ground "
+        "- **occupied cells**: coloured by height, blue low → orange high",
+        "- **free space**: seen and clear (translucent slate)",
+        "- **unknown**: never assumed free (violet)",
+        (f"- **blind spot {blind_cone_m:.2f} m** (red circle): the sensor cannot see the ground "
          "inside it right now (the map there is remembered from earlier frames)"),
-        "- **translucent blue** free space: seen and clear",
-        "- **grey** unknown: never assumed free",
+        "- **moving objects** (pink dots) · **the car** (white arrow) · **path driven** (amber line)",
+        f"- {points}, in the follow view only",
     ]
     if features:
         lines += [
