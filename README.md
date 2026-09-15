@@ -418,6 +418,7 @@ Python 3.11
 NumPy
 SemanticKITTI
 Patchwork++
+Rerun
 pytest
 GitHub Actions
 ```
@@ -679,7 +680,7 @@ Adaptive Variable Resolution 2.5D LiDAR Mapping for Dynamic Environment Percepti
 
 **Prototype: Working**
 
-The core VRgrid pipeline, deterministic tests, adaptive representation and evaluation pipeline have been developed as part of the SIH 2026 submission. The Rerun visualisation layer has been removed and no replacement has been chosen yet.
+The core VRgrid pipeline, deterministic tests, adaptive representation, evaluation pipeline and Rerun visualization have been developed as part of the SIH 2026 submission.
 
 Current focus areas include:
 
@@ -706,6 +707,7 @@ VRgrid builds on the open-source robotics, autonomous-driving and mapping resear
 * SemanticKITTI
 * KITTI
 * Patchwork++
+* Rerun
 * NumPy
 * pytest
 

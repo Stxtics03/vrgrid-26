@@ -82,3 +82,24 @@ def test_ground_split_matches_semantics_roughly():
     building = f.semantic == 12
     assert f.ground[road].mean() > 0.9
     assert f.ground[building].mean() < 0.15
+
+
+def test_pipeline_view_builds_headless_and_colours(tmp_path):
+    pytest.importorskip("rerun")
+    from vrgrid.dash.pipeline_view import COLOR_BY, PipelineView, _frame_colors
+    from vrgrid.grid import schedule as schedule_mod
+
+    sched = schedule_mod.load("5/10/20/40")
+    PipelineView(sched, spawn=False, save_path=str(tmp_path / "t.rrd"), color_by="class")
+
+    class _F:
+        points_sensor = np.random.default_rng(0).random((100, 4)).astype(np.float32)
+        points_world = np.random.default_rng(1).random((100, 3)).astype(np.float32)
+        semantic = np.random.default_rng(2).integers(-1, 19, 100)
+        moving = np.zeros(100, dtype=bool)
+        ground = np.random.default_rng(3).random(100) > 0.5
+        reflectivity8 = np.random.default_rng(4).integers(0, 256, 100).astype(np.uint8)
+
+    for name in COLOR_BY:
+        c = _frame_colors(_F(), name)
+        assert c.shape == (100, 3) and c.dtype == np.uint8, name
