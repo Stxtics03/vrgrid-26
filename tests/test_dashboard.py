@@ -309,10 +309,13 @@ def test_dense_map_layers_are_points_sized_to_the_cell(tmp_path, monkeypatch):
         engine.step(f)
         view.log_frame(f)
 
-    dense = {"world/map/occupied", "world/map/free", "world/map/unknown"}
+    dense = {"world/map/occupied", "world/map/by_class", "world/map/free", "world/map/unknown"}
     drawn = [(p, a) for p, a in calls if p in dense and not isinstance(a, rr.Clear)]
-    assert "world/map/occupied" in {p for p, _ in drawn}
+    assert {"world/map/occupied", "world/map/by_class"} <= {p for p, _ in drawn}
     assert all(isinstance(a, rr.Points3D) for _, a in drawn)
+    # Rings mode is the one tiled layer -- a mesh per ring, never Boxes3D
+    tiled = [a for p, a in calls if p.startswith("world/map/by_ring/") and not isinstance(a, rr.Clear)]
+    assert tiled and all(isinstance(a, rr.Mesh3D) for a in tiled)
 
     occupied = [a for p, a in drawn if p == "world/map/occupied"][-1]
     radii = occupied.radii.as_arrow_array().to_numpy(zero_copy_only=False)
@@ -465,9 +468,10 @@ def test_live_numbers_table_shows_this_frame_beside_the_whole_run():
         ground_method="patchworkpp")
     assert "### Frame 1,284" in md and "ghost removal ON" in md and "Patchwork++" in md
     assert "| Frame time | 152 ms · 6.6 fps | 152 ms · 6.6 fps |" in md
-    assert "| Ghost cells removed | 9,214 | 50,841 |" in md
-    assert "| Kept by the guard | 8,057 | 56,107 |" in md
-    assert "| Skipped by the cap | 0 | 0 |" in md                 # no flag when it is 0
+    assert "| Moving-object cells cleared | 9,214 | 50,841 |" in md
+    assert "| Cells kept (seen this scan) | 8,057 | 56,107 |" in md
+    assert "| Skipped by candidate cap | 0 | 0 |" in md           # no flag when it is 0
+    assert "Ghost cells" not in md and "guard" not in md
     # 139,143 / 225,916 cells x 12 B, against the fixed 745,000-cell allocation
     assert "| Map cells in use | 1.67 MB | peak 2.71 MB |" in md
     assert "| Map allocation | 8.94 MB, fixed at startup | never grows |" in md   # the real footprint
@@ -476,10 +480,11 @@ def test_live_numbers_table_shows_this_frame_beside_the_whole_run():
     assert "Measured" not in md and "Dense" not in md
 
     off = status_markdown(5, 10, sched, ghost_removal=False)
-    assert "ghost removal OFF" in off and "| Ghost cells removed | off | off |" in off
+    assert "ghost removal OFF" in off and "| Moving-object cells cleared | off | off |" in off
     assert "| Frame time | — | — |" in off                       # no timing: a dash, not a zero
     capped = dict(run, truncated=7)
-    assert "Skipped by the cap ⚑" in status_markdown(5, 10, sched, ghost_removal=True, run=capped)
+    assert "Skipped by candidate cap ⚑" in status_markdown(5, 10, sched, ghost_removal=True,
+                                                           run=capped)
 
 
 def test_details_tab_follows_the_deck_and_derives_every_figure():
@@ -499,9 +504,14 @@ def test_details_tab_follows_the_deck_and_derives_every_figure():
     # the deck's measured results and scope limits
     for label, value in DECK_MEASURED:
         assert f"| {label} | {value} |" in md
-    assert f"| Blind cone radius | {blind_cone_radius_m():.2f} m |" in md
-    assert "| 30 cm pothole detectable to | 8.3 m |" in md
-    assert "| Pedestrian motion detectable to | 25 m |" in md
+    # scope limits: three rows, each with its unit and what it means
+    assert f"| Blind spot radius | {blind_cone_radius_m():.2f} m — no ground seen closer |" in md
+    assert "| 30 cm pothole | detectable up to 8.3 m |" in md
+    assert "| Pedestrian motion | detectable up to 25 m |" in md
+    # plain wording, not internal jargon
+    assert "| Accuracy loss when merging, ρ (1.0 = none) |" in md
+    assert "| Cleanup failures | 0 of 4,071 frames (seq 08) |" in md
+    assert "Coarsening" not in md and "inert" not in md
 
 
 def test_legend_strip_names_every_ring_and_the_blind_cone():
@@ -510,8 +520,11 @@ def test_legend_strip_names_every_ring_and_the_blind_cone():
     sched = load_schedule("5/10/20/40")
     md = map_legend_markdown(sched, color_by="class", blind_cone_m=blind_cone_radius_m())
     for r in sched.rings:                   # every ring's cell size AND its reach
-        assert f"{r.cell_m * 100:g} cm to {r.half_width_m:g} m" in md
-    assert f"blind cone {blind_cone_radius_m():.2f} m" in md and "path driven" in md
+        assert f"{r.cell_m * 100:g} cm cells, out to {r.half_width_m:g} m" in md
+    assert f"blind spot {blind_cone_radius_m():.2f} m" in md and "path driven" in md
+    assert "free space" in md and "unknown" in md                  # plain names, not colour words
+    assert "slate" not in md and "violet" not in md
+    assert "**Rings** (default)" in md and "**Semantic class**" in md and "**Height**" in md
     assert "Ring 3 confidence" not in md          # the features note only with --features
     assert "Ring 3 confidence" in map_legend_markdown(sched, color_by="class",
                                                       blind_cone_m=3.74, features=True)
@@ -526,23 +539,29 @@ def test_rings_are_drawn_as_squares_at_their_half_width(tmp_path, monkeypatch):
     calls = _spy_logs(monkeypatch)
     sched = load_schedule("5/10/20/40")
     PipelineView(sched, spawn=False, save_path=str(tmp_path / "rings.rrd"))
-    rings = [(p, a) for p, a in calls if p.startswith("world/vehicle/rings/")]
+    rings = [(p, a) for p, a in calls
+             if p.startswith("world/vehicle/rings/") and not p.endswith("/labels")]
     assert len(rings) == len(sched.rings)
     for (path, strip), ring in zip(rings, sched.rings):
         assert isinstance(strip, rr.LineStrips3D)
         pts = strip.strips.as_arrow_array().to_pylist()[0]
         xy = np.abs(np.array(pts)[:, :2])
         assert len(pts) == 5 and np.allclose(xy, ring.half_width_m)
-    # the vehicle is one small flat arrow, logged once -- no car model
+    # one label per ring, on its corner, naming the cell size
+    labels = [a for p, a in calls if p == "world/vehicle/rings/labels"]
+    assert len(labels) == 1
+    assert labels[0].labels.as_arrow_array().to_pylist() == ["5 cm", "10 cm", "20 cm", "40 cm"]
+    # the vehicle is one flat arrow, logged once -- no car model
     assert not [p for p, _ in calls if p in ("world/vehicle/body", "world/vehicle/heading")]
     markers = [a for p, a in calls if p == "world/vehicle/marker"]
     assert len(markers) == 1 and isinstance(markers[0], rr.Mesh3D)
     verts = np.array(markers[0].vertex_positions.as_arrow_array().to_pylist())
-    assert verts.shape == (3, 3) and np.ptp(verts[:, 0]) <= 4.0     # small: under 4 m long
+    # findable from the raised camera, still car-sized
+    assert verts.shape == (3, 3) and 5.0 <= np.ptp(verts[:, 0]) <= 8.0
     assert verts[:, 0].argmax() == 0 and np.allclose(verts[0, 1], 0.0)   # the tip points forward
 
 
-def test_charts_carry_two_lines_each_and_the_table_updates_every_frame(tmp_path, monkeypatch):
+def test_demo_panels_and_graphs_update_every_frame(tmp_path, monkeypatch):
     import rerun as rr
     from vrgrid.dash.pipeline_view import PipelineView
     from vrgrid.run.engine import MapEngine
@@ -566,11 +585,16 @@ def test_charts_carry_two_lines_each_and_the_table_updates_every_frame(tmp_path,
         return sum(1 for p, _ in calls if p == path)
 
     assert len(sent) == 1
-    for path in ("panel/status", "stats/ghosts/cleared", "stats/ghosts/spared",
+    for path in ("panel/status", "panel/header", "panel/kpi/memory", "panel/kpi/frame_time",
+                 "panel/kpi/moving",
+                 "stats/frame_ms/under", "stats/frame_ms/over", "stats/frame_ms/budget",
+                 "stats/memory_mb/in_use", "stats/memory_mb/allocation", "stats/memory_mb/uniform",
+                 "stats/moving/cleared",
                  "world/follow"):              # the chase camera moves every frame
         assert count(path) == 3, path
     stats = {p for p, _ in calls if p.startswith("stats/")}
-    assert stats == {"stats/ghosts/cleared", "stats/ghosts/spared"}   # no GPU: no GPU lines
+    assert not [p for p in stats if p.startswith("stats/gpu_pct")]   # no GPU: no GPU lines
+    assert not [p for p in stats if p.startswith("stats/ghosts")]    # the old two-line chart is gone
     # map_interval=2 over 3 timed frames: one full window, so exactly one feed line
     feed = [a for p, a in calls if p == "panel/feed/frames"]
     assert len(feed) == 1 and isinstance(feed[0], rr.TextLog)
@@ -578,8 +602,8 @@ def test_charts_carry_two_lines_each_and_the_table_updates_every_frame(tmp_path,
     assert view._run["perception"] == 180.0 and view._run["peak_occupied"] > 0
     assert count("world/trajectory") == 1          # frames 0 and 2 redraw; frame 0 has 1 point
 
-    view.log_frame(_wall_frame(3))           # no counters or timing: still no blank table
-    assert count("panel/status") == 4 and count("stats/ghosts/cleared") == 3
+    view.log_frame(_wall_frame(3))           # no counters or timing: tiles still update, no blank
+    assert count("panel/kpi/frame_time") == 4 and count("stats/frame_ms/under") == 3
     view.finish()
     assert count("world/trajectory") == 2
 
@@ -694,3 +718,152 @@ def test_saving_without_a_viewer_is_labelled_as_not_rendering(tmp_path):
                         save_path=str(tmp_path / "file.rrd"))
     view._gpu.stop()
     assert view.rendering_live is False
+
+
+# --------------------------------------------------------------------------
+# the KPI layout -- tiles, colour modes, tiles-as-cells, swatches, glow
+# --------------------------------------------------------------------------
+
+
+def test_kpi_tiles_say_four_numbers_big_and_plainly():
+    from vrgrid.dash._config import (
+        header_markdown,
+        kpi_deterministic_markdown,
+        kpi_frame_time_markdown,
+        kpi_memory_markdown,
+        kpi_moving_markdown,
+    )
+
+    sched = load_schedule("5/10/20/40")
+    md = kpi_memory_markdown(257_500, sched)                  # 257,500 cells x 12 B = 3.09 MB
+    assert md.startswith("## 3.09 MB") and "of 8.94 MB fixed" in md
+    bar = md.split("`")[1]
+    assert len(bar) == 16 and bar.count("█") == 6             # 34.6% of 16 blocks
+    assert kpi_memory_markdown(1, sched).split("`")[1].count("█") == 1   # never empty for a live map
+    assert kpi_memory_markdown(0, sched, has_map=False).startswith("## —")
+
+    assert "✓ under budget" in kpi_frame_time_markdown(60.0, 100.0)
+    assert "△ near budget" in kpi_frame_time_markdown(95.0, 100.0)
+    assert "✗ over budget" in kpi_frame_time_markdown(140.0, 100.0)
+    assert kpi_frame_time_markdown(None, 100.0).startswith("## —")
+
+    moving = kpi_moving_markdown(9_214, 50_841, ghost_removal=True)
+    assert moving.startswith("## 9,214") and "50,841 this run" in moving
+    assert kpi_moving_markdown(5, 5, ghost_removal=False).startswith("## off")
+    assert "identical hash" in kpi_deterministic_markdown()
+
+    header = header_markdown(1284, ghost_removal=True)
+    assert "SIH26053" in header and "Chronicles.exe" in header and "frame 1,284" in header
+    assert "`GHOST REMOVAL: ON`" in header and "`LABELS: GT`" in header
+    assert "Patchwork" not in header                           # ground method lives in Details
+    assert "`GHOST REMOVAL: OFF`" in header_markdown(1, ghost_removal=False)
+
+
+def test_frame_time_graph_splits_into_under_and_over_budget_lines():
+    from vrgrid.dash.pipeline_view import _split_frame_time
+
+    under, over = _split_frame_time(60.0, 100.0)
+    assert under == 60.0 and np.isnan(over)
+    under, over = _split_frame_time(140.0, 100.0)
+    assert np.isnan(under) and over == 140.0
+    under, over = _split_frame_time(100.0, 100.0)            # at the budget is within it
+    assert under == 100.0 and np.isnan(over)
+
+
+def test_rings_mode_draws_each_ring_as_flat_tiles_sized_to_its_cell(tmp_path, monkeypatch):
+    import rerun as rr
+    from vrgrid.dash.pipeline_view import _TILE_FILL, PipelineView
+    from vrgrid.run.engine import MapEngine
+
+    sched = load_schedule("5/10/20/40")
+    engine = MapEngine(sched, ghost_removal=True)
+    view = PipelineView(sched, spawn=False, save_path=str(tmp_path / "tiles.rrd"),
+                        engine=engine, map_interval=1)
+    calls = _spy_logs(monkeypatch)
+    for i in range(3):
+        f = _wall_frame(i)
+        engine.step(f)
+        view.log_frame(f)
+
+    last = {p: a for p, a in calls if p.startswith("world/map/by_ring/")}
+    slots = engine.occupied_slots()
+    drawn = 0
+    for i, layout in enumerate(engine.handle.rings):
+        n = int(((slots >= layout.offset) & (slots < layout.offset + layout.slots)).sum())
+        mesh = last[f"world/map/by_ring/ring_{i}"]
+        if n == 0:
+            assert isinstance(mesh, rr.Clear)
+            continue
+        drawn += 1
+        assert isinstance(mesh, rr.Mesh3D)
+        v = np.array(mesh.vertex_positions.as_arrow_array().to_pylist())
+        t = np.array(mesh.triangle_indices.as_arrow_array().to_pylist())
+        assert len(v) == 4 * n and len(t) == 2 * n and t.max() == 4 * n - 1   # one quad a cell
+        assert np.isclose(v[1, 0] - v[0, 0], layout.cell_m * _TILE_FILL, atol=1e-4)  # tile = cell
+        assert np.allclose(v[:4, 2], v[0, 2])                                  # flat
+    assert drawn >= 2, "the wall scene should occupy more than one ring"
+
+
+def test_semantic_class_mode_decodes_the_cell_class_candidate(tmp_path):
+    from vrgrid.dash.palettes import _CLASS_LUT
+    from vrgrid.dash.pipeline_view import PipelineView
+    from vrgrid.grid.fusion import COUNTER_BITS
+    from vrgrid.run.engine import MapEngine
+
+    sched = load_schedule("5/10/20/40")
+    engine = MapEngine(sched, ghost_removal=True)
+    view = PipelineView(sched, spawn=False, save_path=str(tmp_path / "cls.rrd"), engine=engine)
+    slots = np.array([0, 1, 2])
+    engine.handle.grid["semantic_class"][slots] = [
+        (0 << COUNTER_BITS) | 5,       # car, counter 5
+        (12 << COUNTER_BITS) | 1,      # building, counter 1
+        31 << COUNTER_BITS,            # unlabelled
+    ]
+    cols = view._class_colours(slots)
+    assert np.array_equal(cols[0], _CLASS_LUT[0 + 1])
+    assert np.array_equal(cols[1], _CLASS_LUT[12 + 1])
+    assert np.array_equal(cols[2], _CLASS_LUT[0])              # the unknown colour
+
+
+def test_moving_objects_are_big_bright_dots_at_any_distance(tmp_path, monkeypatch):
+    from vrgrid.dash.pipeline_view import _GHOST_DOT_RGB, PipelineView
+
+    view = PipelineView(load_schedule("5/10/20/40"), spawn=False,
+                        save_path=str(tmp_path / "ghosts.rrd"))
+    calls = _spy_logs(monkeypatch)
+    frame = _wall_frame(0)
+    frame.moving[:30] = True
+    view.log_frame(frame)
+
+    dots = [a for p, a in calls if p == "world/ghosts"]
+    assert len(dots) == 1 and len(dots[0].positions.as_arrow_array()) == 30
+    radius = dots[0].radii.as_arrow_array().to_pylist()[0]
+    assert radius <= -5.0                    # UI points (negative): same size at any camera distance
+    assert _GHOST_DOT_RGB[0] == 255 and max(_GHOST_DOT_RGB[1:]) < 100   # red, and bright
+
+
+def test_legend_is_a_row_of_real_colour_swatches(tmp_path, monkeypatch):
+    import rerun as rr
+    from vrgrid.dash.pipeline_view import PipelineView, legend_items
+
+    sched = load_schedule("5/10/20/40")
+    items = legend_items(sched)
+    labels = [t for t, _ in items]
+    assert labels[:4] == ["5 cm", "10 cm", "20 cm", "40 cm"]
+    assert {"moving", "car", "path", "blind spot", "free space", "unknown"} <= set(labels)
+    assert len({tuple(c) for _, c in items[:4]}) == 4          # four different ring colours
+    assert len(legend_items(load_schedule("5/10/50"))) == len(items) - 1
+
+    calls = _spy_logs(monkeypatch)
+    PipelineView(sched, spawn=False, save_path=str(tmp_path / "legend.rrd"))
+    swatches = [a for p, a in calls if p == "panel/legend_swatches"]
+    assert len(swatches) == 1 and isinstance(swatches[0], rr.Points2D)
+    assert swatches[0].labels.as_arrow_array().to_pylist() == labels
+
+
+def test_the_demo_layout_builds_for_every_schedule():
+    from vrgrid.dash.pipeline_view import _demo_blueprint
+
+    for name in available_schedules():
+        _demo_blueprint(load_schedule(name))
+    _demo_blueprint(load_schedule("5/10/20/40"), background=(235, 238, 242))   # light test

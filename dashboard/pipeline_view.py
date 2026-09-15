@@ -35,14 +35,22 @@ import rerun.blueprint as rrb
 from vrgrid.cell import CELL_BYTES, OCC_FREE, OCC_UNKNOWN
 from vrgrid.grid.confidence import drivable_confidence
 from vrgrid.grid.features import detect
+from vrgrid.grid.fusion import COUNTER_BITS
 
 from ._config import (
+    NEAR_BUDGET_FRACTION,
     blind_cone_radius_m,
     details_markdown,
     frame_budget_ms,
+    header_markdown,
+    kpi_deterministic_markdown,
+    kpi_frame_time_markdown,
+    kpi_memory_markdown,
+    kpi_moving_markdown,
     map_legend_markdown,
     playback_fps,
     status_markdown,
+    uniform_2_5d_baseline,
 )
 from .gpu_stats import GpuSampler
 
@@ -62,12 +70,12 @@ from .palettes import (
 
 PALETTES = ("semantickitti", "groups")
 
-# Elevation ramp for the occupied-cell surface: blue -> green -> yellow ->
-# vermillion over a FIXED [-3, 15] m band (z-up world), so a cell's colour does
-# not change frame to frame as the visible height range moves. Okabe-Ito stops,
-# an ordered light->dark progression that survives all three CVD types.
+# Elevation ramp for the Height map mode: blue -> teal -> yellow -> red over a
+# FIXED [-3, 15] m band (z-up world), so a cell's colour does not change frame
+# to frame as the visible height range moves. Bright stops: the darker
+# Okabe-Ito blue this started from disappeared on black on a projector.
 _HEIGHT_STOPS = np.array(
-    [[0, 114, 178], [0, 158, 115], [240, 228, 66], [213, 94, 0]], dtype=np.float32
+    [[40, 120, 255], [0, 220, 160], [255, 225, 40], [255, 90, 40]], dtype=np.float32
 )
 
 
@@ -106,8 +114,8 @@ def _height_ramp(z: np.ndarray, lo: float = _HEIGHT_LO_M, hi: float = _HEIGHT_HI
 #   UNKNOWN   the blind cone, plus any cell the map still calls UNKNOWN despite
 #             having been observed (`_log_unknown`); never-observed allocation
 #             slots are left undrawn, they are not information
-_FREE_RGBA = (110, 125, 140, 70)      # slate, ~27% opacity -- recedes behind occupied
-_UNKNOWN_RGBA = (150, 90, 160, 90)    # muted violet, matches the blind-cone "unknown" hue family
+_FREE_RGBA = (70, 120, 170, 70)       # translucent blue, ~27% opacity -- recedes behind occupied
+_UNKNOWN_RGBA = (150, 150, 150, 110)  # neutral grey: clearly not a ring colour, clearly not free
 
 # --- §7.4 features and §7.5 confidence -------------------------------------
 #
@@ -168,103 +176,227 @@ def _confidence_ramp(c: np.ndarray) -> np.ndarray:
 # --- the demo layout -----------------------------------------------------------
 #
 # One fixed layout, saved into every recording, so a baked scene opens the same
-# way on any machine: two map views on the left (the whole map from above, and
-# a follow camera close behind the car), and on the right two tabs -- "Run"
-# (numbers, GPU chart, ghost chart, status feed) and "Details" (the memory
-# comparison, measured results and legend, which never change). The entity tree
-# and selection panel are collapsed; expand the left panel for the eye icons --
-# `world/ghosts` is still the point-cloud ghost toggle.
+# way on any machine. Two top-level tabs:
 #
-# Two lines per chart, no more. Five overlapping lines with a legend box over
-# the data read as noise on a projector; frame time and memory are numbers in
-# the Live table instead, and each chart title names its line colours so no
-# legend box is needed. Okabe-Ito colours, which the CVD audit already covers.
-_SERIES = {
-    "stats/ghosts/cleared": ("removed", (0, 158, 115)),
-    "stats/ghosts/spared": ("kept by the guard", (86, 180, 233)),
-    "stats/gpu_pct/usage": ("GPU usage", (0, 158, 115)),
-    "stats/gpu_pct/memory": ("GPU memory", (204, 121, 167)),
-}
+#   Demo     the 3D map large on the left (~70%), its colour mode as tabs above
+#            it -- Rings (default: cell size, the whole idea), Semantic class,
+#            Height; on the right a header with mode badges, four KPI tiles, a
+#            memory-over-time graph and a frame-time graph; under both, one
+#            row of real colour swatches as the legend.
+#   Details  what a judge asks for: the full run table, the memory comparison,
+#            measured results, the long legend, the moving-object and GPU
+#            charts and the status feed.
+#
+# Rerun 0.37 cannot host buttons, colour Markdown or fill the area under a line,
+# so: the mode "toggle" is the map's tab bar; the legend swatches are coloured
+# points in a 2D view; frame time is two lines -- green under budget, red over
+# -- split with NaN gaps; the KPI verdicts are symbols and words.
+_BACKGROUND_RGB = (14, 17, 22)
 
-# The status feed: one coloured line per map-redraw window. Okabe-Ito green /
-# yellow / vermillion, the same family as everything else on screen. "Near" is a
-# display threshold for colouring a line, not a map threshold.
+# 5 / 10 / 20 / 40 cm: four clearly different bright hues -- not shades of
+# blue, which disappeared on a projector. A fifth ring would reuse the first.
+_RING_RGB = ((0, 229, 255), (118, 255, 3), (255, 214, 0), (255, 61, 199))
+_RING_LINE_RGB = (235, 235, 235)
+
+# Rings mode draws cells as flat TILES, not points: a tile is 0.85 of its cell,
+# so the gaps show the lattice and near tiles read as visibly smaller than far
+# ones. Measured on 200,000 cells: the quad build is 14 ms and a redraw is
+# 11.3 MB on disk against 3.5 MB as points -- which is why only this one mode
+# is tiles, and Semantic class and Height stay points.
+_TILE_FILL = 0.85
+
+# Moving objects: big bright red dots. A demo-only colour; GHOST_RGB
+# (CVD-audited) still colours the `motion` point layer. Negative radii are UI
+# points in Rerun, so the dots stay the same size at any camera distance. No
+# halo: Rerun shades 3D points as spheres, and a translucent halo rendered as a
+# dull maroon ball at alpha 70 and at alpha 140 alike.
+_GHOST_DOT_RGB = (255, 60, 60)
+_GHOST_DOT_RADIUS_UI = -7.0
+_BLIND_SPOT_RGB = (255, 120, 0)
+_TRAIL_RGB = (220, 220, 220)
+
+# The vehicle marker: one flat white arrow pointing along +x (forward), 6.4 m
+# long and 4 m wide -- big enough to find from the raised default camera --
+# lifted 25 cm so it sits on top of the ground cells.
+_MARKER_Z_M = 0.25
+_MARKER_VERTS_M = [[4.0, 0.0, _MARKER_Z_M], [-2.4, 2.0, _MARKER_Z_M], [-2.4, -2.0, _MARKER_Z_M]]
+_MARKER_RGB = (255, 255, 255)
+
+# Default camera: high and tilted behind the car, so the car sits low in the
+# frame and the ring squares ahead of it are in view. It is the view's saved
+# preset -- double-click the map to return to it.
+_EYE_POSITION_M = [-95.0, 0.0, 120.0]
+_EYE_TARGET_M = [35.0, 0.0, 0.0]
+
+_UNDER_RGB = (0, 210, 130)
+_OVER_RGB = (255, 70, 70)
+_BUDGET_RGB = (235, 235, 235)
+
+# The status feed (Details tab): one coloured line per map-redraw window.
 _FEED_OK_RGB = (0, 158, 115)
 _FEED_WARN_RGB = (240, 228, 66)
 _FEED_BAD_RGB = (213, 94, 0)
-_FEED_NEAR_BUDGET = 0.8
+_FEED_NEAR_BUDGET = NEAR_BUDGET_FRACTION
 
-_TRAIL_RGB = (240, 180, 60)
-
-# The vehicle marker: one flat white triangle pointing along +x (forward),
-# 3.2 m long and 2 m wide, lifted 25 cm so it sits on top of the ground cells.
-# A map-style "you are here" arrow -- position and heading, nothing else.
-_MARKER_Z_M = 0.25
-_MARKER_VERTS_M = [[2.0, 0.0, _MARKER_Z_M], [-1.2, 1.0, _MARKER_Z_M], [-1.2, -1.0, _MARKER_Z_M]]
-_MARKER_RGB = (240, 240, 240)
+_LEGEND_SPACING = 10.0
 
 
-def _demo_blueprint(schedule):
-    # Both map views live in `/world/follow`, a frame that carries the vehicle's
-    # POSITION only (see `log_frame`), and show everything under /world. So both
-    # cameras go where the car goes. `tracking_entity` with a fixed eye did not
+def _ring_rgb(i: int):
+    return _RING_RGB[i % len(_RING_RGB)]
+
+
+def legend_items(schedule):
+    """The Demo tab's one-row legend, `[(label, rgb), ...]`: ring swatches from
+    the schedule, then every other mark on the map."""
+    items = [(f"{r.cell_m * 100:g} cm", _ring_rgb(i)) for i, r in enumerate(schedule.rings)]
+    items += [("moving", _GHOST_DOT_RGB), ("car", _MARKER_RGB), ("path", _TRAIL_RGB),
+              ("blind spot", _BLIND_SPOT_RGB), ("free space", _FREE_RGBA[:3]),
+              ("unknown", _UNKNOWN_RGBA[:3])]
+    return items
+
+
+def _series_styles(schedule):
+    base = f"{schedule.base_cell_m * 100:g} cm"
+    return {
+        "stats/frame_ms/under": ("under budget", _UNDER_RGB),
+        "stats/frame_ms/over": ("over budget", _OVER_RGB),
+        "stats/frame_ms/budget": ("budget", _BUDGET_RGB),
+        "stats/memory_mb/uniform": (f"uniform {base} grid", (255, 140, 90)),
+        "stats/memory_mb/allocation": ("VRgrid allocation", _RING_RGB[0]),
+        "stats/memory_mb/in_use": ("VRgrid cells in use", _RING_RGB[1]),
+        "stats/moving/cleared": ("moving-object cells cleared", _GHOST_DOT_RGB),
+        "stats/gpu_pct/usage": ("GPU usage", (0, 158, 115)),
+        "stats/gpu_pct/memory": ("GPU memory", (204, 121, 167)),
+    }
+
+
+def _split_frame_time(total_ms: float, budget_ms: float):
+    """`(under, over)` for the two frame-time lines: the value on one line and
+    NaN -- a gap in Rerun -- on the other."""
+    return (np.nan, total_ms) if total_ms > budget_ms else (total_ms, np.nan)
+
+
+def _quad_triangles(n: int) -> np.ndarray:
+    """(2n, 3) uint32 triangle indices for n quads of 4 vertices each, wound
+    counter-clockwise seen from above so the tiles face up."""
+    base = np.arange(0, 4 * n, 4, dtype=np.uint32)
+    t = np.empty((n, 2, 3), np.uint32)
+    t[:, 0, 0], t[:, 0, 1], t[:, 0, 2] = base, base + 1, base + 2
+    t[:, 1, 0], t[:, 1, 1], t[:, 1, 2] = base, base + 2, base + 3
+    return t.reshape(-1, 3)
+
+
+def _tile_vertices(x, y, z, half_m: float) -> np.ndarray:
+    """(4n, 3) float32 corners of flat square tiles centred on (x, y) at z.
+    A fresh array every redraw: Rerun may keep a zero-copy view of it."""
+    n = len(x)
+    verts = np.empty((4 * n, 3), np.float32)
+    v = verts.reshape(n, 4, 3)
+    xm, xp = x - half_m, x + half_m
+    ym, yp = y - half_m, y + half_m
+    v[:, 0, 0], v[:, 0, 1] = xm, ym
+    v[:, 1, 0], v[:, 1, 1] = xp, ym
+    v[:, 2, 0], v[:, 2, 1] = xp, yp
+    v[:, 3, 0], v[:, 3, 1] = xm, yp
+    v[:, :, 2] = np.asarray(z, np.float32)[:, None]
+    return verts
+
+
+def _demo_blueprint(schedule, background=_BACKGROUND_RGB):
+    # The map view lives in `/world/follow`, a frame that carries the vehicle's
+    # POSITION only (see `log_frame`), and shows everything under /world. So the
+    # camera goes where the car goes. `tracking_entity` with a fixed eye did not
     # follow: by frame 1,000 of seq 00 the car was 370 m away and the view still
     # sat at the origin. Position but not heading, on purpose: a camera bolted
     # to the car's yaw swings on every small heading change between 10 Hz frames.
-    def map_view(name, position, look_target, contents="/world/**"):
+    def map_view(name, hide):
         return rrb.Spatial3DView(
-            name=name, origin="/world/follow", contents=contents,
-            background=rrb.Background(color=[14, 17, 22]),
+            name=name, origin="/world/follow",
+            contents=["+ /world/**", *(f"- {path}" for path in hide)],
+            background=rrb.Background(color=list(background)),
             line_grid=rrb.LineGrid3D(visible=False),
-            eye_controls=rrb.EyeControls3D(position=position, look_target=look_target))
+            eye_controls=rrb.EyeControls3D(position=_EYE_POSITION_M, look_target=_EYE_TARGET_M))
 
-    maps = rrb.Vertical(
-        # High and nearly straight down: the whole 200 m map, all four rings --
-        # the MAP only. With the raw sweep drawn over it (class colours on top
-        # of height colours) nobody could tell sensor data from map cells.
-        map_view("Overview · the map, all four rings", [-20.0, 0.0, 150.0], [0.0, 0.0, 0.0],
-                 contents=["+ /world/**", "- /world/points", "- /world/ghosts"]),
-        # Low behind the car: the fine 5 cm ring up close, with the sweep on it.
-        map_view("Around the car · map + LiDAR points", [-30.0, -18.0, 22.0], [15.0, 0.0, 0.0]),
-        row_shares=[1, 1],
+    # The colour-mode toggle: one click on a tab. The raw LiDAR sweep shows only
+    # in Semantic class mode -- over ring or height colours it read as noise.
+    map_modes = rrb.Tabs(
+        map_view("Rings · cell size", ["/world/map/by_class", "/world/map/occupied", "/world/points"]),
+        map_view("Semantic class", ["/world/map/by_ring/**", "/world/map/occupied"]),
+        map_view("Height", ["/world/map/by_ring/**", "/world/map/by_class", "/world/points"]),
+        active_tab=0,
+        name="Map",
     )
 
-    no_legend = rrb.PlotLegend(visible=False)     # the titles name the colours
-    live = rrb.Vertical(
-        # "Run", not "Live": the same layout plays baked recordings, and a
-        # replay labelled "Live" invites "is this running now?".
-        rrb.TextDocumentView(name="Run numbers", origin="/panel/status"),
-        rrb.TimeSeriesView(name="GPU rendering % · green usage · pink memory",
-                           origin="/stats/gpu_pct", plot_legend=no_legend,
-                           axis_y=rrb.ScalarAxis(range=(0.0, 100.0))),
-        rrb.TimeSeriesView(name="Ghost cells per frame · green removed · blue kept",
-                           origin="/stats/ghosts", plot_legend=no_legend),
-        # Body only: each line already names its frames, the path is always
-        # /panel/feed, and the colour already says green / yellow / red.
-        rrb.TextLogView(
-            name="Status feed", origin="/panel/feed",
-            columns=rrb.archetypes.TextLogColumns(
-                timeline_columns=[rrb.components.TimelineColumn("frame", visible=False)],
-                text_log_columns=[
-                    rrb.components.TextLogColumn("LogLevel", visible=False),
-                    rrb.components.TextLogColumn("EntityPath", visible=False),
-                    rrb.components.TextLogColumn("Body", visible=True),
-                ],
-            ),
+    no_legend = rrb.PlotLegend(visible=False)
+    budget = frame_budget_ms()
+    uniform_mb = uniform_2_5d_baseline(schedule)["bytes"] / 1e6
+    side = rrb.Vertical(
+        rrb.TextDocumentView(name="VRgrid", origin="/panel/header"),
+        rrb.Grid(
+            rrb.TextDocumentView(name="Map memory", origin="/panel/kpi/memory"),
+            rrb.TextDocumentView(name="Frame time", origin="/panel/kpi/frame_time"),
+            rrb.TextDocumentView(name="Moving objects", origin="/panel/kpi/moving"),
+            rrb.TextDocumentView(name="Determinism", origin="/panel/kpi/deterministic"),
+            grid_columns=2,
         ),
-        row_shares=[4.0, 2, 2, 2],     # 3.6 fit six rows; the table now has seven
-        name="Run",
+        # The strongest picture: a flat VRgrid line against the uniform grid it replaces.
+        rrb.TimeSeriesView(name="Memory MB · VRgrid vs uniform grid · click to jump",
+                           origin="/stats/memory_mb",
+                           axis_y=rrb.ScalarAxis(range=(0.0, 1.1 * uniform_mb))),
+        rrb.TimeSeriesView(name="Frame time ms · green under budget · red over · click to jump",
+                           origin="/stats/frame_ms", plot_legend=no_legend,
+                           axis_y=rrb.ScalarAxis(range=(0.0, 2.5 * budget))),
+        row_shares=[1.2, 3.0, 2.2, 2.2],       # 0.8 cut the header's badge line
     )
-    # What never changes while the demo plays, on its own tab so the Live tab
-    # can stay roomy instead of packing three tables above the charts.
+    n_items = len(legend_items(schedule))
+    legend = rrb.Spatial2DView(
+        name="Legend", origin="/panel/legend_swatches",
+        visual_bounds=rrb.VisualBounds2D(
+            x_range=[-0.6 * _LEGEND_SPACING, (n_items - 0.4) * _LEGEND_SPACING],
+            y_range=[-2.2, 2.2]),
+        background=rrb.Background(color=list(background)),
+    )
+    demo = rrb.Vertical(
+        rrb.Horizontal(map_modes, side, column_shares=[7, 3]),
+        legend,
+        row_shares=[12, 1.3],
+        name="Demo",
+    )
+
+    # Opened only when a judge asks.
     details = rrb.Vertical(
-        rrb.TextDocumentView(name="Memory and results", origin="/panel/details"),
-        rrb.TextDocumentView(name="Legend", origin="/panel/legend"),
-        row_shares=[1.5, 1],       # 1:1 cut the Measured table; the legend had room to spare
+        rrb.Horizontal(
+            rrb.TextDocumentView(name="Run details", origin="/panel/status"),
+            rrb.TextDocumentView(name="Memory and results", origin="/panel/details"),
+            rrb.TextDocumentView(name="Legend and colour modes", origin="/panel/legend"),
+            column_shares=[1, 1.2, 1],
+        ),
+        rrb.Horizontal(
+            rrb.TimeSeriesView(name="Moving-object cells cleared per frame",
+                               origin="/stats/moving", plot_legend=no_legend),
+            rrb.TimeSeriesView(name="GPU rendering % · green usage · pink memory",
+                               origin="/stats/gpu_pct", plot_legend=no_legend,
+                               axis_y=rrb.ScalarAxis(range=(0.0, 100.0))),
+            # Body only: each line already names its frames and its colour
+            # already says green / yellow / red.
+            rrb.TextLogView(
+                name="Status feed", origin="/panel/feed",
+                columns=rrb.archetypes.TextLogColumns(
+                    timeline_columns=[rrb.components.TimelineColumn("frame", visible=False)],
+                    text_log_columns=[
+                        rrb.components.TextLogColumn("LogLevel", visible=False),
+                        rrb.components.TextLogColumn("EntityPath", visible=False),
+                        rrb.components.TextLogColumn("Body", visible=True),
+                    ],
+                ),
+            ),
+            column_shares=[1, 1, 1.3],
+        ),
+        row_shares=[3, 2],
         name="Details",
     )
     return rrb.Blueprint(
-        rrb.Horizontal(maps, rrb.Tabs(live, details, active_tab=0), column_shares=[3, 2]),
+        rrb.Tabs(demo, details, active_tab=0),
         rrb.BlueprintPanel(state="collapsed"),
         rrb.SelectionPanel(state="collapsed"),
         # Starts playing and loops, so a scene keeps running unattended for as
@@ -402,8 +534,19 @@ class PipelineView:
             media_type=rr.MediaType.MARKDOWN), static=True)
         rr.log("panel/details", rr.TextDocument(details_markdown(schedule),
                                                 media_type=rr.MediaType.MARKDOWN), static=True)
-        for path, (name, rgb) in _SERIES.items():
+        rr.log("panel/kpi/deterministic", rr.TextDocument(
+            kpi_deterministic_markdown(), media_type=rr.MediaType.MARKDOWN), static=True)
+        items = legend_items(schedule)
+        xs = np.arange(len(items), dtype=np.float32) * _LEGEND_SPACING
+        rr.log("panel/legend_swatches",
+               rr.Points2D(np.stack([xs, np.zeros_like(xs)], axis=1), radii=0.7,
+                           colors=[rgb for _, rgb in items], labels=[t for t, _ in items],
+                           show_labels=True),
+               static=True)
+        for path, (name, rgb) in _series_styles(schedule).items():
             rr.log(path, rr.SeriesLines(colors=[rgb], names=[name], widths=[2.5]), static=True)
+        self._uniform_mb = uniform_2_5d_baseline(schedule)["bytes"] / 1e6
+        self._tri_cache = {}                   # ring -> read-only quad triangle indices
         self._log_rings(schedule)
         self._log_blind_cone(blind_cone_radius_m())
         self._log_marker()
@@ -450,18 +593,28 @@ class PipelineView:
                                [hw, -hw, 0], [hw, hw, 0]], dtype=np.float32)
             rr.log(
                 f"world/vehicle/rings/ring_{ring.ring}_{ring.cell_m * 100:g}cm",
-                # No in-scene label: four labels plus the blind cone's piled up
-                # on top of each other at the vehicle. The Legend lists them.
-                rr.LineStrips3D([square], colors=[200, 205, 212], radii=0.05),
+                # Thick enough to read on a projector from the raised camera.
+                rr.LineStrips3D([square], colors=[_RING_LINE_RGB], radii=0.25),
                 static=True,
             )
+        # One label per ring, floating on its front-left corner, in the ring's
+        # colour. The corners lie on a diagonal, so the labels never pile up at
+        # the car -- labels on the strips themselves did.
+        corners = np.array([[r.half_width_m, r.half_width_m, 0.5] for r in schedule.rings],
+                           dtype=np.float32)
+        rr.log("world/vehicle/rings/labels",
+               rr.Points3D(corners, radii=0.6,
+                           colors=[_ring_rgb(i) for i in range(len(schedule.rings))],
+                           labels=[f"{r.cell_m * 100:g} cm" for r in schedule.rings],
+                           show_labels=True),
+               static=True)
 
     def _log_blind_cone(self, radius_m: float):
         th = np.linspace(0, 2 * np.pi, 65)
         strip = np.stack([radius_m * np.cos(th), radius_m * np.sin(th), np.zeros_like(th)], axis=1)
         rr.log(
             "world/vehicle/blind_cone",
-            rr.LineStrips3D([strip.astype(np.float32)], colors=[230, 60, 60], radii=0.05),
+            rr.LineStrips3D([strip.astype(np.float32)], colors=[_BLIND_SPOT_RGB], radii=0.15),
             static=True,
         )
 
@@ -498,16 +651,55 @@ class PipelineView:
         Calling `occupied_cells()` also refreshes `engine.occ_state`, which
         `_log_free` / `_log_unknown` then read -- so this runs first."""
         slots, x, y, z = self.engine.occupied_cells()
-        self._last_occupied_n = len(slots)   # for _log_memory, no second pass
+        self._last_occupied_n = len(slots)   # for the memory tile and graph, no second pass
         if len(slots) == 0:
-            rr.log("world/map/occupied", rr.Clear(recursive=True))
+            for path in ("world/map/occupied", "world/map/by_class", "world/map/by_ring"):
+                rr.log(path, rr.Clear(recursive=True))
             return
         cell_m = self._cell_m_per_slot(slots)
         centres = np.stack([x, y, z], axis=1).astype(np.float32)
+        # One layer per colour mode; the map's tabs choose which one shows.
+        # Height mode keeps the historical `world/map/occupied` path.
         rr.log(
             "world/map/occupied",
             rr.Points3D(centres, radii=cell_m / 2.0, colors=_height_ramp(z)),
         )
+        rr.log(
+            "world/map/by_class",
+            rr.Points3D(centres, radii=cell_m / 2.0, colors=self._class_colours(slots)),
+        )
+        self._log_ring_tiles(slots, x, y, z)
+
+    def _class_colours(self, slots: np.ndarray) -> np.ndarray:
+        """Semantic class mode: each cell's class candidate -- the top bits of
+        `semantic_class` (fusion.py: 5-bit candidate | 3-bit counter) -- in the
+        palette's colours. Anything past the 19 learning classes (31 is
+        unlabelled) gets the unknown colour, row 0 of the table."""
+        cand = (self.engine.handle.grid["semantic_class"][slots] >> COUNTER_BITS).astype(np.int64)
+        idx = np.where(cand < len(_CLASS_LUT) - 1, cand + 1, 0)
+        if self.palette == "groups":
+            return GROUP_RGB[_GROUP_LUT[idx]]
+        return _CLASS_LUT[idx]
+
+    def _log_ring_tiles(self, slots, x, y, z):
+        """Rings mode: the occupied cells of each ring as ONE flat-coloured mesh
+        of square tiles, each 0.85 of its cell (see _TILE_FILL). Near tiles are
+        visibly small and far ones big -- the foveation, at a glance."""
+        for i, layout in enumerate(self.engine.handle.rings):
+            path = f"world/map/by_ring/ring_{i}"
+            sel = (slots >= layout.offset) & (slots < layout.offset + layout.slots)
+            n = int(np.count_nonzero(sel))
+            if n == 0:
+                rr.log(path, rr.Clear(recursive=False))
+                continue
+            tris = self._tri_cache.get(i)
+            if tris is None:                   # once per ring, sized to the ring
+                tris = _quad_triangles(layout.slots)
+                tris.flags.writeable = False   # shared across redraws, never written
+                self._tri_cache[i] = tris
+            verts = _tile_vertices(x[sel], y[sel], z[sel], layout.cell_m * _TILE_FILL / 2.0)
+            rr.log(path, rr.Mesh3D(vertex_positions=verts, triangle_indices=tris[: 2 * n],
+                                   albedo_factor=_ring_rgb(i)))
 
     def _log_free(self):
         """FREE cells -- observed and clear -- as translucent slate points at
@@ -706,9 +898,9 @@ class PipelineView:
                rr.LineStrips3D([np.stack(self._trail)], colors=[_TRAIL_RGB], radii=0.12))
 
     def _log_stats(self, frame, counters, timing_ms, dashboard_ms):
-        """The Live tab: its two charts and its numbers table. Every frame, so
-        nothing is ever blank between map redraws; the occupied count in the
-        table is the last redraw's."""
+        """Every frame: the Demo tab's header, KPI tiles and two graphs, and the
+        Details tab's table, charts and feed. Nothing is ever blank between map
+        redraws; the memory figures are the last redraw's."""
         timing = None
         if timing_ms and "perception" in timing_ms:
             timing = {"perception": timing_ms["perception"],
@@ -717,12 +909,19 @@ class PipelineView:
             self._run["n"] += 1
             for key, value in timing.items():
                 self._run[key] += value
+            under, over = _split_frame_time(timing["total"], self._budget_ms)
+            rr.log("stats/frame_ms/under", rr.Scalars(under))
+            rr.log("stats/frame_ms/over", rr.Scalars(over))
+            rr.log("stats/frame_ms/budget", rr.Scalars(self._budget_ms))
         if counters is not None:
             for key in ("cleared", "protected", "truncated"):
                 self._run[key] += int(getattr(counters, key))
-            rr.log("stats/ghosts/cleared", rr.Scalars(counters.cleared))
-            rr.log("stats/ghosts/spared", rr.Scalars(counters.protected))
+            rr.log("stats/moving/cleared", rr.Scalars(counters.cleared))
         self._run["peak_occupied"] = max(self._run["peak_occupied"], self._last_occupied_n)
+        if self.engine is not None:
+            rr.log("stats/memory_mb/in_use", rr.Scalars(self._last_occupied_n * CELL_BYTES / 1e6))
+            rr.log("stats/memory_mb/allocation", rr.Scalars(self._alloc_mb))
+            rr.log("stats/memory_mb/uniform", rr.Scalars(self._uniform_mb))
 
         # GPU: the sampler's latest snapshot, never a blocking call on this path.
         gpu = self._gpu.latest()
@@ -734,13 +933,26 @@ class PipelineView:
 
         self._log_feed(frame, counters, timing)
         tracked = self._run["n"] > 0 or counters is not None
+        md = rr.MediaType.MARKDOWN
         rr.log("panel/status", rr.TextDocument(
             status_markdown(frame.index, self._last_occupied_n, self.schedule,
                             ghost_removal=self.ghost_removal, counters=counters,
                             run=self._run if tracked else None, timing_ms=timing,
                             ground_method=self._ground_method,
                             has_map=self.engine is not None, gpu=gpu),
-            media_type=rr.MediaType.MARKDOWN))
+            media_type=md))
+        rr.log("panel/header", rr.TextDocument(
+            header_markdown(frame.index, ghost_removal=self.ghost_removal), media_type=md))
+        rr.log("panel/kpi/memory", rr.TextDocument(
+            kpi_memory_markdown(self._last_occupied_n, self.schedule,
+                                has_map=self.engine is not None), media_type=md))
+        rr.log("panel/kpi/frame_time", rr.TextDocument(
+            kpi_frame_time_markdown(timing["total"] if timing else None, self._budget_ms),
+            media_type=md))
+        rr.log("panel/kpi/moving", rr.TextDocument(
+            kpi_moving_markdown(None if counters is None else int(counters.cleared),
+                                self._run["cleared"] if tracked else None,
+                                ghost_removal=self.ghost_removal), media_type=md))
 
     def _log_feed(self, frame, counters, timing):
         """One coloured status line per map-redraw window, plus an immediate red
@@ -768,7 +980,7 @@ class PipelineView:
             verdict, level, rgb = "near budget", rr.TextLogLevel.WARN, _FEED_WARN_RGB
         else:
             verdict, level, rgb = "over budget", rr.TextLogLevel.ERROR, _FEED_BAD_RGB
-        ghosts = (f" · {self._feed_cleared:,} ghost cells removed"
+        ghosts = (f" · {self._feed_cleared:,} moving-object cells cleared"
                   if self.ghost_removal and counters is not None else "")
         rr.log("panel/feed/frames", rr.TextLog(
             f"frames {self._feed_window[0][0]:,}–{self._feed_window[-1][0]:,} · "
@@ -825,7 +1037,8 @@ class PipelineView:
 
         # The removed set, on its own entity -- this is what the demo toggles.
         ghosts = frame.points_world[frame.moving].astype(np.float32)
-        rr.log("world/ghosts", rr.Points3D(ghosts, colors=list(GHOST_RGB), radii=0.09))
+        rr.log("world/ghosts", rr.Points3D(ghosts, colors=[_GHOST_DOT_RGB],
+                                           radii=_GHOST_DOT_RADIUS_UI))
 
         # vehicle transform: origin + heading from the GT pose (world-frame yaw)
         fwd_world = frame.pose[:3, :3] @ np.array([0.0, 0.0, 1.0])  # camera z = forward

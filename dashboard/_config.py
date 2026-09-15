@@ -199,15 +199,99 @@ def _rate(ms) -> str:
     return "—" if not ms else f"{ms:.0f} ms · {1e3 / ms:.1f} fps"
 
 
+# A frame whose time is above this fraction of the budget reads "near budget":
+# a display threshold for the frame-time tile and the status feed, not a map one.
+NEAR_BUDGET_FRACTION = 0.8
+
+# Where the semantic labels come from: SemanticKITTI's ground-truth `.label`
+# files (`perception/semantics.py`; CLAUDE.md "Don't"). Shown as a header badge
+# so nobody reads the class colours as a segmentation result.
+LABEL_SOURCE = "GT"
+
+
+def header_markdown(frame_index: int, *, ghost_removal: bool) -> str:
+    """The Demo tab's header: identity, frame, and the run's modes as badges.
+    Inline code spans are the nearest thing to pills Rerun's Markdown draws."""
+    return "\n".join([
+        f"**VRgrid** · SIH26053 · Chronicles.exe · frame {frame_index:,}",
+        "",
+        f"`GHOST REMOVAL: {'ON' if ghost_removal else 'OFF'}` `LABELS: {LABEL_SOURCE}`",
+    ])
+
+
+def _bar(fraction: float, width: int = 20) -> str:
+    """A text fill bar. A non-empty map never shows an empty bar."""
+    fraction = min(max(float(fraction), 0.0), 1.0)
+    filled = round(fraction * width)
+    if fraction > 0 and filled == 0:
+        filled = 1
+    return "█" * filled + "░" * (width - filled)
+
+
+def kpi_memory_markdown(n_occupied: int, schedule, *, has_map: bool = True) -> str:
+    """KPI tile: storage the occupied cells use, of the fixed allocation."""
+    if not has_map:
+        return "## —\n\nMap memory · back end off"
+    alloc = schedule.total_cells * CELL_BYTES
+    used = int(n_occupied) * CELL_BYTES
+    # The big figure alone on its line: "1.67 / 8.94 MB" at heading size did not
+    # fit a quarter-width tile, and a smaller font defeats the tile. The tile's
+    # own title already says "Map memory", so no label line repeats it.
+    # Bar and allocation share one line: on a third line the allocation fell
+    # below the tile's height.
+    return "\n".join([
+        f"## {used / 1e6:.2f} MB",
+        "",
+        f"`{_bar(used / alloc, width=16)}` of {alloc / 1e6:.2f} MB fixed",
+    ])
+
+
+def kpi_frame_time_markdown(total_ms: float | None, budget_ms: float) -> str:
+    """KPI tile: this frame's time and a verdict against the budget. Markdown
+    cannot be coloured in Rerun, so the verdict is a symbol and words; the
+    frame-time graph carries the green / red."""
+    if total_ms is None:
+        return "## —\n\nFrame time"
+    if total_ms <= NEAR_BUDGET_FRACTION * budget_ms:
+        verdict = "✓ under budget"
+    elif total_ms <= budget_ms:
+        verdict = "△ near budget"
+    else:
+        verdict = "✗ over budget"
+    return "\n".join([f"## {total_ms:.0f} ms", "", f"**{verdict}** · {budget_ms:.0f} ms", "",
+                      "Frame time"])
+
+
+def kpi_moving_markdown(cleared_now: int | None, cleared_run: int | None, *,
+                        ghost_removal: bool) -> str:
+    """KPI tile: moving-object cells cleared this frame, and over the run."""
+    if not ghost_removal:
+        return "## off\n\nMoving-object cells cleared"
+    now = "—" if cleared_now is None else f"{int(cleared_now):,}"
+    run = "—" if cleared_run is None else f"{int(cleared_run):,}"
+    return "\n".join([f"## {now}", "", f"this frame · {run} this run", "",
+                      "Moving-object cells cleared"])
+
+
+def kpi_deterministic_markdown() -> str:
+    """KPI tile: determinism is a CI-blocking test, not something one run can
+    show on its own -- the tile says where the check lives."""
+    # Short lines: a quarter-width tile wrapped "identical map hash" onto a
+    # third line and cut it.
+    return "## ✓ Deterministic\n\nsame input → identical hash\n\nCI-blocking test"
+
+
 # Results the SIH26053 deck quotes (slides 4-5), shown on the demo's side panel.
 # Each is measured, and each entry names where: none is typed from memory.
 DECK_MEASURED = (
     # docs/known-limitations.md §6 -- 40 frames, 5_10_20_40, Patchwork++, rings 1-3
-    ("Coarsening cost ρ, rings 1–3", "1.18 – 1.84 (seq 07 / 08)"),
+    # rho = IL / spread (math §9.3 eq. 28): 1.0 means merging cost nothing
+    # beyond the terrain's own roughness.
+    ("Accuracy loss when merging, ρ (1.0 = none)", "1.18 – 1.84 (seq 07 / 08)"),
     # docs/known-limitations.md §1 -- post-fix re-soak of every seq 08 frame
-    ("Frames where ghost cleanup went inert", "0 of 4,071 (seq 08)"),
+    ("Cleanup failures", "0 of 4,071 frames (seq 08)"),
     # tests/test_determinism.py -- CI-blocking
-    ("Two identical runs", "bit-identical map hash"),
+    ("Deterministic", "two identical runs → bit-identical map hash"),
 )
 # scripts/memory_table.py -- the sparse / hashed 3D row is an estimate there too
 SPARSE_3D_ROW = ("Sparse / hashed 3D (estimate)", "~130–240 MB", "~15–27×")
@@ -269,13 +353,15 @@ def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_remova
     if ghost_removal:
         capped = run is not None and run["truncated"] > 0
         rows += [
-            f"| Ghost cells removed | {now('cleared')} | {total('cleared')} |",
-            f"| Kept by the guard | {now('protected')} | {total('protected')} |",
-            (f"| Skipped by the cap{' ⚑' if capped else ''} | {now('truncated')} | "
+            f"| Moving-object cells cleared | {now('cleared')} | {total('cleared')} |",
+            # Not "static cells": the guard keeps ANY cell with a return in this
+            # scan, including where a moving car is right now (math §10.4).
+            f"| Cells kept (seen this scan) | {now('protected')} | {total('protected')} |",
+            (f"| Skipped by candidate cap{' ⚑' if capped else ''} | {now('truncated')} | "
              f"{total('truncated')} |"),
         ]
     else:
-        rows.append("| Ghost cells removed | off | off |")
+        rows.append("| Moving-object cells cleared | off | off |")
     peak = max(int((run or {}).get("peak_occupied", 0)), int(n_occupied))
     # Two rows, not one "Map memory" figure: the storage the occupied cells
     # take is NOT the process footprint -- the whole grid is allocated once at
@@ -320,9 +406,9 @@ def details_markdown(schedule) -> str:
     ]
     rows += [f"| {label} | {value} |" for label, value in DECK_MEASURED]
     rows += [
-        f"| Blind cone radius | {blind_cone_radius_m():.2f} m |",
-        f"| 30 cm pothole detectable to | {POTHOLE_30CM_RANGE_M:g} m |",
-        f"| Pedestrian motion detectable to | {PEDESTRIAN_MOTION_RANGE_M:g} m |",
+        f"| Blind spot radius | {blind_cone_radius_m():.2f} m — no ground seen closer |",
+        f"| 30 cm pothole | detectable up to {POTHOLE_30CM_RANGE_M:g} m |",
+        f"| Pedestrian motion | detectable up to {PEDESTRIAN_MOTION_RANGE_M:g} m |",
     ]
     return "\n".join(rows)
 
@@ -330,26 +416,32 @@ def details_markdown(schedule) -> str:
 def map_legend_markdown(schedule, *, color_by: str, blind_cone_m: float,
                         palette_note: str | None = None, features: bool = False,
                         feature_interval: int = 20) -> str:
-    """The legend on the "Details" tab, logged once: one short list per topic,
-    one item per line, so it reads at a glance instead of as a wrapped strip.
+    """The long legend, on the "Details" tab. The Demo tab carries the short one
+    -- a single row of real colour swatches (`pipeline_view.legend_items`).
     Ring sizes come from the schedule; nothing here is typed by hand.
     """
-    points = (f"LiDAR points (follow view only) coloured by `{color_by}`"
+    points = (f"LiDAR points coloured by `{color_by}`"
               + (f" ({palette_note})" if palette_note else ""))
-    lines = ["### Rings (squares around the car)", ""]
-    lines += [f"- ring {i}: {r.cell_m * 100:g} cm to {r.half_width_m:g} m"
-              for i, r in enumerate(schedule.rings)]
+    lines = [
+        "### Map colour modes (the tabs above the map)",
+        "",
+        "- **Rings** (default): each cell in its ring's colour, as a flat tile of that cell's size",
+        f"- **Semantic class**: each cell in its class colour, with the {points}",
+        "- **Height**: each cell by height, blue low → red high",
+        "",
+        "### Rings (squares around the car)",
+        "",
+    ]
+    lines += [f"- {r.cell_m * 100:g} cm cells, out to {r.half_width_m:g} m" for r in schedule.rings]
     lines += [
         "",
-        "### Colours",
+        "### Other marks",
         "",
-        "- **blue → orange** occupied, by height",
-        "- **slate** free: seen and clear",
-        "- **violet** unknown: never assumed free",
-        (f"- **red circle** blind cone {blind_cone_m:.2f} m, the sensor's blind spot right now "
-         "(the map inside it is remembered from earlier frames)"),
-        "- **red dots** ghosts (moving points) · **white arrow** the car · **amber line** path driven",
-        f"- {points}",
+        "- **red dots** moving objects · **white arrow** the car · **grey line** path driven",
+        (f"- **orange circle** blind spot {blind_cone_m:.2f} m: the sensor cannot see the ground "
+         "inside it right now (the map there is remembered from earlier frames)"),
+        "- **translucent blue** free space: seen and clear",
+        "- **grey** unknown: never assumed free",
     ]
     if features:
         lines += [
