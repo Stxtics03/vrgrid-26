@@ -214,6 +214,18 @@ def flat_slot_into(buf: RingBuffer, ix, iy, out, scratch: dict):
 Z_DATUM_STEP_M = 1.0
 
 
+def datum_step(datum_m, ego_z_m: float):
+    """`(new_datum, delta_cm)` for `track_datum`, with `delta_cm` None when no
+    height in the map needs re-basing. Split out so the device grid
+    (`gpu/device.py`) re-bases by exactly the same rule as the host one."""
+    want = float(np.floor(ego_z_m / Z_DATUM_STEP_M) * Z_DATUM_STEP_M)
+    if datum_m is None:
+        return want, None
+    if want == datum_m:
+        return datum_m, None
+    return want, round((want - datum_m) * 100.0)
+
+
 def track_datum(grid, datum_m, ego_z_m: float) -> float:
     """Slide the 8 m vertical band to keep the vehicle inside it. Returns the
     new datum, and RE-BASES every height already in `grid` to match.
@@ -245,13 +257,9 @@ def track_datum(grid, datum_m, ego_z_m: float) -> float:
     nothing to re-base and the band starts where the vehicle is. That also
     keeps the first step from being a jump of the sequence's whole elevation.
     """
-    want = float(np.floor(ego_z_m / Z_DATUM_STEP_M) * Z_DATUM_STEP_M)
-    if datum_m is None:
+    want, delta_cm = datum_step(datum_m, ego_z_m)
+    if delta_cm is None:
         return want
-    if want == datum_m:
-        return datum_m
-
-    delta_cm = round((want - datum_m) * 100.0)
     ground = grid["ground_height"]
     ceiling = grid["ceiling_height"]
     seen = ceiling != CEILING_NONE

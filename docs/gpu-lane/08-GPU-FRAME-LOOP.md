@@ -1,132 +1,146 @@
-# The GPU frame loop — the device kernels on the real pipeline
+# The pipeline on the GPU
 
-*Shrestha, 2026-09-16. Everything here is reproducible with the two commands
-below, on the reference build in `07-LOCAL-BUILD.md`.*
+*Shrestha, 2026-09-17. Supersedes the 2026-09-16 version of this file, which
+moved only scatter and the cleanup kernel and left the map on the host.*
 
 ```bash
-python scripts/gpu_parity.py --seq 08 --frames 200               # same map, per stage
-python scripts/timing_table.py --seq 08 --frames 200 --device cuda  # whole frame
-python -m vrgrid.run --seq 08 --device cuda --viz                 # Rerun, on the card
+python -m vrgrid.run --seq 08 --device cuda --viz                   # Rerun, on the card
+python scripts/gpu_parity.py --seq 08 --frames 200                 # bit-identical, every frame
+python scripts/timing_table.py --seq 08 --frames 200 --device cuda  # latency
 ```
 
-**Headline: `MapEngine(device="cuda")` builds the same map as the CPU engine,
-bit for bit, on every one of 200 real frames of seq 08. The map back end runs
-2.3x faster at p50 and 2.3x at p99. Cleanup is the biggest win: 4.0x.**
-
-Until today, `scatter_sorted` and `visibility_cleanup` ran on device only in
-their own benchmarks (`06-DAY3-CUPY-FINDINGS.md`, commits 30f285b and dae46e6).
-Nothing on the frame path called them there. `src/gpu/device.py` is the seam
-that does.
+**Headline: the whole frame runs at 22.3 ms p50 / 26.7 ms p99 on the card,
+against 88.6 / 107.2 ms on the CPU on the same machine, same session. That is
+45 FPS, and it meets 10 Hz at p99 with 3.7x headroom. The CPU pipeline misses
+it. Range image, labels, reflectivity, the map grid and every map stage run on
+the GPU, and the output is bit-identical to the CPU pipeline on every one of
+200 real frames.**
 
 ## What runs where
 
-| stage | where | owner |
+| stage | where | how |
 |---|---|---|
-| perception (load … reflectivity) | host | JP |
-| `bin_points` | host | Aakash |
-| upload columns → `scatter_sorted` → download aggregate | **device** | Shrestha |
-| `fuse` | host | Aakash |
-| `occupancy_state` | host | Aakash |
-| upload slots + heights → slot→centre, guard, eq (32) → download mask | **device** | Shrestha |
-| `apply_miss`, `shift` | host | Shrestha |
+| load | host | disk |
+| transform | host | one BLAS pose product, ~1.4 ms, uploaded |
+| **range image** | **device** | CUDA kernel + 64-bit key sort (closest return wins) |
+| **semantics, motion** | **device** | LUT built from JP's own functions over all 65,536 label words |
+| ground | host | **Patchwork++**, a C++ CPU library, runs while the card works |
+| **reflectivity** | **device** | per-pixel kernel, scattered to points |
+| **shift, datum** | **device** | strip clear; re-base kernel |
+| **bin** | **device** | ring + lattice + toroidal slot in one kernel |
+| **scatter** | **device** | payload kernel + `scatter_sorted` on cupy |
+| **fuse** | **device** | Kalman, ceiling, occupancy, Boyer-Moore, reflectivity, counts: one kernel |
+| **occupancy, centres, guard, eq (32), misses** | **device** | kernels + cupy |
 
-**The grid stays on the host**, because `fuse`, `occupancy_state` and
-`bin_points` are numpy in `src/grid`. Moving the SoA arrays onto the card means
-porting those, and that is Aakash's call, not something to do from
-`src/gpu`. The device gets only what the ported stages read, and the host gets
-back only what its own stages consume.
+**The grid lives in device memory.** `MapEngine.handle.grid` becomes a
+`MirroredGrid`: a read-only host copy that refreshes on the first read after a
+frame. The dashboard, `map_hash`, the feature detectors and `occupied_cells()`
+keep reading numpy and pay the 10.9 MB copy only when they look. A write to it
+raises, because the next sync would silently overwrite it.
 
-The slot→centre inverse (`MapEngine._centres`) moved to the device along with
-the kernel. That was not planned. A breakdown after the first cut showed the
-kernel at 3.2 ms and the host inverse at 12.7 ms, so porting only the kernel
-left most of the stage behind. The CPU path still uses `_centres` unchanged.
+Frames from `iter_pipeline(device="cuda")` are `DeviceFrame`s. Their
+perception outputs stay on the card for the engine. `semantic`,
+`range_image` and the other perception fields download only if something reads
+them (the dashboard does, a headless run does not), and they refuse to once
+the next frame has reused the buffers.
+
+What stays on the host: Patchwork++ (CLAUDE.md: wire it in, do not
+reimplement it), the pose transform (its BLAS rounding cannot be promised on
+device) and the disk read.
 
 ## Parity — seq 08, frames 0–199, Patchwork++, ghost removal on
 
-Both engines take the same `PerceptionFrame` object from one perception pass.
-Two replays would differ in ground masks (D1, the Patchwork++ singleton), and
-feeding the same frame to both keeps that out of the comparison. After every
-step the script hashes the full grid and compares every `StepCounters` field.
+For each scan `gpu_parity.py` runs perception on both paths and folds each
+frame into its own engine. After every frame it compares exactly: the range
+image (NaN-aware), inverse index, reflectivity bytes, semantic labels, motion
+flags, every counter, and the full-grid hash. Patchwork++ runs once and both
+paths get its mask; running it twice would compare D1, not the GPU.
 
-- map hash identical on **200 / 200** frames, final `4313df1a58e68f0ed69a6e5417db4000`
-- **7,609,197** cells cleared by §10.4 over the run, so the comparison is not vacuous
-- `tests/test_device.py` does the same over the Gate 3 ghost scene, with
-  ghost removal on and off, and asserts the scene cleared and protected cells.
-  It skips without a card.
+- **identical on 200 / 200 frames**, final map hash `4313df1a58e68f0ed69a6e5417db4000`.
+  That is the same hash the CPU engine produced in the 2026-09-16 run.
+- 7,609,197 cells cleared by §10.4 over the run, so the comparison exercises the cleanup
+- also identical with `--max-points 100000`, where the engine truncates each scan
 
-## Map back end, per stage (`gpu_parity.py`)
+## What it took to make "identical" true
 
-190 frames after 10 warm-up frames, interleaved on one machine, p50/p99 nearest-rank:
+Each of these was measured before it was relied on. Each would otherwise have
+produced a map that looked right and hashed differently.
 
-| stage | cpu p50 | cpu p99 | cuda p50 | cuda p99 |
+1. **NVRTC fuses `a*b + c` by default.** `x*0.1 + 0.7` over 1M doubles: 289,150
+   mismatches with contraction, 0 with `--fmad=false`. Every kernel is compiled
+   with the flag and written in the numpy reference's operation order.
+2. **cupy's float `//` is not numpy's.** `1.0 // 0.1` is 9 in numpy and 10 in
+   cupy, and 42,425 of 5M lattice-scale coordinates disagreed. `bin_points`
+   floors every world coordinate onto the 5 cm lattice, so the kernel carries
+   numpy's `npy_divmod` line for line.
+3. **atan2 / asin.** The float32 device overloads put 116 of 24.5M points in a
+   different range-image pixel over 200 frames. numpy's float32 results are
+   correctly rounded on glibc 2.42, and double-precision device results rounded
+   to float32 matched them on all 3.7M points tested. The kernel computes in
+   double and rounds.
+4. **The variance codec uses `log`,** which is not guaranteed to agree across
+   libms. The kernel does not call it. `variance_code_thresholds()` bisects
+   Aakash's `quantise_variance_cm2` over double bit patterns for the 255 code
+   boundaries, checks monotonicity, and the kernel binary-searches the table.
+   It matches the codec on 2M values including every boundary ±1 ulp.
+5. **"Closest return wins"** is JP's stable argsort by range plus
+   first-per-pixel. On device it is a sort of unique `pixel | range bits |
+   index` keys, which selects the same winner including on exact range ties.
+
+## Latency — seq 08, 200 frames, same session, back to back
+
+| stage | cpu p50 | cpu p99 | **cuda p50** | **cuda p99** |
 |---|---|---|---|---|
-| bin | 9.56 | 21.90 | 7.74 | 11.35 |
-| scatter | 9.99 | 19.08 | **4.17** | **6.45** |
-| fuse | 5.81 | 10.76 | 4.97 | 8.14 |
-| cleanup | 35.76 | 49.18 | **8.86** | **13.79** |
-| shift | 2.58 | 6.90 | 2.21 | 5.83 |
-| **engine** | **65.83** | **88.19** | **29.21** | **39.08** |
+| load | 0.51 | 0.93 | 0.46 | 0.84 |
+| transform | 1.45 | 2.66 | 1.43 | 2.16 |
+| range_image | 22.96 | 29.05 | **1.13** | **2.85** |
+| semantics + motion | 0.50 | 0.75 | **0.10** | **0.14** |
+| ground (Patchwork++, host both) | 12.54 | 14.59 | 12.57 | 14.86 |
+| reflectivity | 3.53 | 4.98 | **0.02** | **0.04** |
+| bin | 6.77 | 9.82 | **0.18** | **0.23** |
+| scatter | 7.08 | 10.86 | **1.47** | **2.02** |
+| fuse | 4.11 | 5.70 | **0.05** | **0.07** |
+| cleanup | 26.70 | 34.79 | **1.65** | **2.40** |
+| shift | 2.11 | 5.81 | 2.94 | 4.64 |
+| **FRAME** | **88.62** | **107.19** | **22.27** | **26.73** |
+| 10 Hz at p99 | misses | | **meets, 3.7x** | |
 
-⚠️ **bin, fuse and shift did not get faster.** Their code is identical in both
-columns. The ~1.2x difference is an artefact of interleaving: the two engines
-alternate every frame, so each one runs with the other's work in the caches.
-Only scatter and cleanup changed, and the device numbers **include** the
-host↔device copies. The downloads block, so the synchronisation is inside the
-timed stage.
+Stage rows on cuda synchronise the device at each boundary, so each row is
+real work and not a kernel launch. The free-running pass, with no per-stage
+synchronisation, gives 22.23 / 27.89 ms: the staged table is not flattering
+the device. On cuda, `shift` includes uploading the frame's ground mask.
 
-## Whole frame (`timing_table.py --seq 08`), same session, run back to back
-
-| | cpu | cuda |
-|---|---|---|
-| FRAME p50 | 118.39 ms | **91.09 ms** |
-| FRAME p99 | 152.88 ms | **117.25 ms** |
-| 10 Hz at p50 | no | **yes** |
-| 10 Hz at p99 | no | **no** |
-
-⚠️ **The CPU column is slower than the 89.18 / 100.43 ms in the research log.**
-That figure was taken on a quiet machine, and this laptop was not quiet today
-(`range_image` alone went from 24.45 to 31.16 ms, and that stage has no device
-code in it). Compare the two columns above with each other. Neither column is
-comparable to the old figure.
-
-**What is left is not in `src/gpu`.** On the CUDA frame, `range_image` (31.5 ms,
-35%) and `ground` (16.9 ms, 19%) are the two largest stages, and both are in
-JP's `src/perception`. `bin` (9.2 ms) is next and is Aakash's. Porting more of
-my own code would not recover the p99. The next step is those owners' call.
+**Patchwork++ is now 56% of the frame.** It is the only large stage left and
+it is a CPU library by project rule. Everything else in the frame totals under
+10 ms.
 
 ## Device memory
 
-| | |
-|---|---|
-| preallocated device buffers | 131.91 MB |
-| cupy pool used | 132.04 MB |
-| cupy pool reserved | 270.42 MB |
-| whole card (`nvidia-smi`) | 457 MiB |
+134.96 MB preallocated on the card (grid 10.9 MB, scatter scratch, and the
+eq (32) candidate buffers sized to the structural cap of 910,000 slots). The
+pool reports ~145 MB used and up to ~416 MB reserved, because cupy caches the
+per-frame temporaries of `flatnonzero`, `searchsorted` and the sort. The host
+allocation and every memory figure on a slide are unchanged: `report()`
+describes the CPU configuration, and the device bytes are declared separately
+through `MapEngine.device_bytes()`.
 
-Most of the 132 MB is sized by `visibility.max_candidate_cells: null`, meaning
-the structural cap of 910,000 slots. Every candidate buffer (centres, slots,
-heights, eq (32) scratch) is sized to that cap. That is what makes it a bound
-and not an estimate. A smaller cap chosen by the room shrinks it proportionally.
-The pool reserves about 2x what it uses because of the per-frame device
-temporaries inside `compat.segment_min` and cupy's casts. These are pool reuse,
-not growth: `used` is flat from frame 10 onward.
+## Tests
 
-The host allocation is unchanged. `allocate()` still commits the full CPU
-scratch, so a device run does not change the memory figure on any slide. The
-device bytes are declared separately through `MapEngine.device_bytes()`.
+`tests/test_device.py`, 13 tests:
+- each kernel against its reference on adversarial inputs: lattice-boundary
+  coordinates, exact range ties, codec boundaries ±1 ulp
+- the engine on both devices over the Gate 3 ghost scene, with ghost removal
+  on and off, hashing the grid every frame
+- stale-frame refusal, the read-only mirror, and host allocation per step
 
-## Hand-offs — not done here, on purpose
+The codec table test needs no card and runs in CI; the rest skip without one.
 
-- **`dashboard/__main__.py:66`** (dashboard owner) builds `MapEngine(sched,
-  ghost_removal=…)` without `device`. `python -m vrgrid.dash --device cuda`
-  needs one `add_argument` and `device=args.device` passed through.
-  `python -m vrgrid.run --viz --device cuda` already works.
-- **`dashboard/gpu_stats.py` docstring** says "`src/gpu/` is NumPy on the CPU;
-  a panel implying the map is computed on the GPU would be false." That is
-  still true for the default run. With `--device cuda` the GPU panel now shows
-  real mapping load, so the caption can say so when the flag is set.
-- **`scripts/demo.sh` / `gen_demo_rrds.py`** bake scenes on the CPU engine.
-  Whether the demo should run on the card is a presentation decision.
-- **T4 column.** Everything above is the RTX 5050 laptop (sm_120). Per port plan
-  §7, re-run both scripts on the AWS instance and publish that as a separate
-  column.
+## Hand-offs, not done here
+
+- **`dashboard/__main__.py:66`** builds `MapEngine` without `device`, so
+  `python -m vrgrid.dash` stays on CPU. `python -m vrgrid.run --viz --device
+  cuda` is the GPU dashboard today. Passing it through is one line for the
+  dashboard owner.
+- **`dashboard/gpu_stats.py` docstring** ("`src/gpu/` is NumPy on the CPU") is
+  out of date for `--device cuda`.
+- **T4 column** on the AWS instance, per port plan §7.

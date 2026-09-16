@@ -1,21 +1,26 @@
-"""The engine's device path: the same map as the CPU, frame for frame. [Shrestha]
+"""The pipeline on the card: every device stage against its CPU reference. [Shrestha]
 
-`test_device_engine_is_bit_identical_to_cpu` is the requirement. It drives the
-real `MapEngine` over the Gate 3 ghost scene from `test_engine.py`, one CPU and
-one CUDA engine fed the same frames, and compares the full grid hash and every
-counter after every step. It also asserts the scene exercised what matters --
-cells were cleared and the guard protected some -- so it cannot pass on a run
-where the cleanup never fired and both maps are trivially equal.
+Each kernel in `gpu/cuda_kernels.py` is checked for EXACT equality with the
+numpy function it replaces, on inputs chosen to hit the places where float
+arithmetic disagrees: lattice-boundary coordinates for binning (cupy's own
+float `//` gets 1.0 // 0.1 wrong), range boundaries for the projection, and
+code boundaries for the variance codec. Then the engine as a whole:
+`test_device_engine_is_bit_identical_to_cpu` drives the real `MapEngine` over
+the Gate 3 ghost scene on both devices and compares the full grid hash after
+every frame, and asserts the scene actually exercised clearing and the guard.
 
-Every device test skips without a working card; the CPU-side checks on
-`resolve_device` run everywhere, because a silent fallback from cuda to cpu is
-the failure that would put a CPU number in a GPU column.
+Device tests skip without a working card. The codec-table and
+`resolve_device` tests need no card and run in CI.
 """
+
+import warnings
 
 import numpy as np
 import pytest
+from vrgrid.gpu import cuda_kernels as K
 from vrgrid.gpu import device as dev
 from vrgrid.gpu.kernels import map_hash
+from vrgrid.grid.quantise import quantise_variance_cm2
 from vrgrid.grid.schedule import load
 from vrgrid.run.engine import MapEngine
 
@@ -34,6 +39,8 @@ def _engine(device, **kw):
                      max_candidates=80_000, device=device, **kw)
 
 
+# --- no card needed -------------------------------------------------------------
+
 def test_resolve_device_rejects_unknown_names():
     assert dev.resolve_device("cpu") == "cpu"
     with pytest.raises(ValueError):
@@ -50,6 +57,107 @@ def test_cpu_engine_has_no_device_half():
     eng = _engine("cpu")
     assert eng.gpu is None and eng.device_bytes() is None
 
+
+def test_variance_code_table_reproduces_the_codec_exactly():
+    """The device codec is a binary search over these thresholds, so the table
+    IS the codec on the card. Checked at every boundary and its neighbours,
+    and across the whole dynamic range."""
+    thr = K.variance_code_thresholds()
+
+    def by_table(v):
+        return np.array([np.searchsorted(-thr, -x, side="right") for x in v])
+
+    rng = np.random.default_rng(0)
+    v = np.exp(rng.uniform(np.log(1e-14), np.log(1e8), 20_000))
+    bits = thr.view(np.uint64)
+    edges = np.concatenate([thr, (bits + np.uint64(1)).view(np.float64),
+                            (bits - np.uint64(1)).view(np.float64)])
+    v = np.concatenate([v, edges])
+    assert np.array_equal(by_table(v), quantise_variance_cm2(v).astype(np.int64))
+
+
+# --- kernels against their references ---------------------------------------------
+
+@needs_cuda
+def test_floor_divide_is_numpys_not_cupys():
+    import cupy as cp
+    k = cp.ElementwiseKernel("float64 a, float64 b", "float64 q",
+                             "q = np_floor_divide(a, b);", "t_floordiv",
+                             preamble=K._PREAMBLE, options=K.OPTIONS)
+    rng = np.random.default_rng(1)
+    a = rng.uniform(-200, 200, 400_000)
+    a[:100_000] = np.round(a[:100_000] / 0.05) * 0.05    # lattice boundaries
+    a = np.concatenate([a, [1.0, 20.05, -0.05, 0.0, -0.0]])
+    for b in (0.05, 0.1):
+        assert np.array_equal(k(cp.asarray(a), b).get(), a // b)
+    # and the reason the kernel exists at all
+    assert (cp.asarray([1.0]) // 0.1).get()[0] != (np.array([1.0]) // 0.1)[0]
+
+
+@needs_cuda
+def test_device_bin_matches_bin_points():
+    import cupy as cp
+    rng = np.random.default_rng(2)
+    eng = _engine("cuda")
+    n = 40_000
+    pts = np.column_stack([rng.uniform(-120, 120, n), rng.uniform(-120, 120, n),
+                           rng.uniform(-3, 3, n), rng.uniform(0, 1, n)]).astype(np.float32)
+    # world = vehicle + a small pose offset, so most points land in the windows
+    world = np.column_stack([pts[:, 0].astype(np.float64) + 0.3175,
+                             pts[:, 1].astype(np.float64) - 0.2125, pts[:, 2]])
+    world[:5000, :2] = np.round(world[:5000, :2] / 0.05) * 0.05
+    for buf in eng.buffers:           # a shifted window, not the origin one
+        buf.x0 += 7
+        buf.y0 -= 3
+    host = eng.bin(pts[:, 0], pts[:, 1], world[:, 0], world[:, 1]).copy()
+    d = {"pts": cp.asarray(pts.reshape(-1)), "ncols": 4, "dtype": np.float32,
+         "world": cp.asarray(world.reshape(-1))}
+    assert np.array_equal(eng.gpu.bin(d, n, eng.buffers).get(), host)
+    assert (host >= 0).sum() > n // 4 and (host < 0).sum() > 0
+
+
+@needs_cuda
+def test_device_projection_matches_range_image_project():
+    ri = pytest.importorskip("vrgrid.perception.range_image")
+    from vrgrid.perception import reflectivity
+    rng = np.random.default_rng(3)
+    n = 60_000
+    az = rng.uniform(-np.pi, np.pi, n)
+    el = np.radians(rng.uniform(-25, 3, n))
+    r = rng.uniform(2, 80, n)
+    pts = np.column_stack([r * np.cos(el) * np.cos(az), r * np.cos(el) * np.sin(az),
+                           r * np.sin(el), rng.uniform(0, 1, n)]).astype(np.float32)
+    pts[:2000] = pts[2000:4000]                      # exact range ties
+    labels = rng.integers(0, 260, n).astype(np.uint32)
+    p = dev.DevicePerception(max_points=n)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        img, inv = ri.project(pts)
+        p.launch(pts, pts[:, :3].astype(np.float64), labels)
+        p.finish()
+    frame = dev.DeviceFrame(p, index=0)
+    assert np.array_equal(frame.range_image, img, equal_nan=True)
+    assert np.array_equal(frame.inverse_index, inv)
+    rho, _ = reflectivity.scatter_to_points(reflectivity.normalise(img), inv)
+    rho = np.concatenate([rho, np.zeros(n - len(rho), np.uint8)])
+    assert np.array_equal(frame.reflectivity8, rho)
+
+
+@needs_cuda
+def test_a_stale_device_frame_refuses_to_read():
+    rng = np.random.default_rng(4)
+    pts = rng.uniform(-20, 20, (100, 4)).astype(np.float32)
+    p = dev.DevicePerception(max_points=1000)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        p.launch(pts, pts[:, :3].astype(np.float64), np.zeros(100, np.uint32))
+        old = dev.DeviceFrame(p, index=0)
+        p.launch(pts, pts[:, :3].astype(np.float64), np.zeros(100, np.uint32))
+    with pytest.raises(RuntimeError, match="later frame"):
+        old.semantic  # noqa: B018
+
+
+# --- the engine -------------------------------------------------------------------
 
 @needs_cuda
 @pytest.mark.determinism
@@ -72,16 +180,23 @@ def test_device_engine_is_bit_identical_to_cpu(ghost_removal):
 
 
 @needs_cuda
-def test_device_frame_loop_allocates_almost_nothing_on_the_host():
-    """Same cap as the CPU engine's own test: the device path must not buy its
-    speed with per-frame host staging copies."""
+def test_the_device_grid_is_the_map_and_the_host_copy_is_read_only():
+    eng = _engine("cuda")
+    frame = _frames(total=2)[0]
+    eng.step(frame)
+    assert int(eng.gpu.grid["obs_count"].sum()) == int(eng.handle.grid["obs_count"].sum()) > 0
+    with pytest.raises(ValueError):
+        eng.handle.grid["log_odds"][0] = 1
+
+
+@needs_cuda
+def test_device_step_allocates_almost_nothing_on_the_host():
     import tracemalloc
 
     frames = _frames(total=6)
     eng = _engine("cuda")
-    for f in frames[:3]:
+    for f in frames[:4]:
         eng.step(f)
-    eng.step(frames[3])
     tracemalloc.start()
     try:
         tracemalloc.reset_peak()
@@ -94,15 +209,6 @@ def test_device_frame_loop_allocates_almost_nothing_on_the_host():
 
 
 @needs_cuda
-def test_upload_refuses_a_dtype_it_would_have_to_cast():
-    k = dev.DeviceKernels(max_points=16, n_cells=64, max_candidates=16)
-    with pytest.raises(TypeError, match="upload expects"):
-        k.scatter(np.zeros(4, np.int32), np.zeros(4, np.int16), np.ones(4, np.int32),
-                  np.zeros(4, np.uint8), np.zeros(4, np.uint8), np.ones(4, bool))
-
-
-@needs_cuda
-def test_device_buffers_are_declared():
-    eng = _engine("cuda")
-    b = eng.device_bytes()
+def test_device_memory_is_declared():
+    b = _engine("cuda").device_bytes()
     assert b["static"] > 0 and b["pool_reserved"] >= b["pool_used"] > 0

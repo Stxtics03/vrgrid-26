@@ -11,10 +11,12 @@ belongs somewhere else:
     cleanup  gpu.visibility.visibility_cleanup + apply_miss
     shift    gpu.shift.shift, tracking the vehicle
 
-`device="cuda"` runs scatter and cleanup on the card through
-`gpu.device.DeviceKernels`; every other stage, and the grid, stay on the host.
-The map must hash identically either way -- `scripts/gpu_parity.py` checks it
-on real frames.
+**`device="cuda"` moves the map onto the card.** The grid lives in device
+memory and every stage above runs there as a CUDA kernel
+(`gpu.device.DeviceMap`), in the same order, and must produce the same map
+hash as the CPU engine after every frame -- `scripts/gpu_parity.py` checks it
+on real data. `handle.grid` then becomes a `MirroredGrid`: a read-only host
+copy refreshed on first read after each frame, so every readout keeps working.
 
 **Why this exists: the ghost toggle has to drive the map, not the point cloud.**
 `dashboard/pipeline_view.py` splits the moving returns into a `world/ghosts`
@@ -34,7 +36,13 @@ from dataclasses import dataclass
 import numpy as np
 from vrgrid.cell import OCC_OCCUPIED
 from vrgrid.gpu.allocators import allocate, resolve_candidate_cap
-from vrgrid.gpu.device import DeviceKernels, resolve_device
+from vrgrid.gpu.device import (
+    DeviceFrame,
+    DeviceMap,
+    MirroredGrid,
+    resolve_device,
+    synced_stage,
+)
 from vrgrid.gpu.kernels import (
     CEILING_NONE,
     measurement_variance_cm2,
@@ -185,14 +193,15 @@ class MapEngine:
         self._cand_slots = np.zeros(cap, np.int64)
         self._has_return = np.zeros(cap, np.bool_)
 
-        # The device half, sized from the same caps as the host scratch it
-        # stands in for, so both paths refuse the same inputs. The host scratch
-        # is still allocated above: `report()` and the memory claim describe
-        # the CPU configuration, and a device run declares its card-side bytes
-        # separately through `device_bytes()` rather than quietly changing them.
+        # The card. Built from the host allocation above, so the device grid
+        # starts in exactly the state `allocate()` put the host one in, and
+        # sized from the same caps, so both configurations refuse the same
+        # inputs. The host allocation stays: it is what `report()` and every
+        # memory figure describe, and it becomes the read-only mirror.
         self.gpu = None
         if self.device == "cuda":
-            self.gpu = DeviceKernels(len(self.handle.scratch["key"]), n_slots, cap)
+            self.gpu = DeviceMap(self)
+            self.handle.grid = MirroredGrid(self.handle.grid, self.gpu.grid)
 
     # -- binning ------------------------------------------------------------
 
@@ -278,6 +287,8 @@ class MapEngine:
     def step(self, frame) -> StepCounters:
         """Fold one `PerceptionFrame` into the map. See the module docstring
         for the stage order; everything here is bookkeeping around it."""
+        if self.gpu is not None:
+            return self._step_device(frame)
         stage = (self.timer.stage if self.timer is not None
                  else (lambda _name: nullcontext()))
         pts = frame.points_sensor
@@ -311,18 +322,15 @@ class MapEngine:
 
         rng_m = np.sqrt(xs * xs + ys * ys + (zs) * (zs))
         with stage("scatter"):
-            columns = (
+            aggregate = scatter_sorted(
                 idx,
                 quantise_height(world[:, 2], self.z_datum),
                 quantise_weight(measurement_variance_cm2(np.maximum(rng_m, 1e-3))),
                 np.asarray(frame.reflectivity8)[:n].astype(np.uint8),
                 cls,
                 np.asarray(frame.ground)[:n].astype(bool),
+                scratch=self.handle.scratch,
             )
-            if self.gpu is not None:
-                aggregate = self.gpu.scatter(*columns)
-            else:
-                aggregate = scatter_sorted(*columns, scratch=self.handle.scratch)
         touched = np.asarray(aggregate.cells).copy()
         with stage("fuse"):
             fuse(self.handle.grid, aggregate, self.thresholds)
@@ -336,6 +344,59 @@ class MapEngine:
                 self._cleanup(frame, touched, ego, counters)
         return counters
 
+    def _step_device(self, frame) -> StepCounters:
+        """`step`, with the grid and every stage on the card. Same order, same
+        counters; the only host work is the ring-window bookkeeping."""
+        gpu = self.gpu
+        stage = synced_stage(self.timer)
+        n_all = len(frame.points_sensor)
+        n = min(n_all, self.max_points)
+        ego = np.asarray(frame.vehicle_xyz_world, float)
+        if self._origin is None:
+            self._origin = ego[:2].copy()
+
+        cls_host = None
+        if isinstance(frame, DeviceFrame):
+            if frame._p.max_class > CLASS_MAX and not self.clip_class_ids:
+                raise ValueError(f"semantic class {frame._p.max_class} exceeds the "
+                                 f"{CLASS_MAX} that fusion's 5-bit candidate holds "
+                                 "(math §10.2)")
+        else:
+            semantic = np.asarray(frame.semantic)[:n]
+            cls_host = np.where(semantic < 0, 0, semantic).astype(np.uint8)
+            if not class_ids_fit(cls_host):
+                if not self.clip_class_ids:
+                    raise ValueError(
+                        f"semantic class {int(cls_host.max())} exceeds the {CLASS_MAX} "
+                        "that fusion's 5-bit candidate holds (math §10.2)")
+                np.clip(cls_host, 0, CLASS_MAX, out=cls_host)
+
+        with stage("shift"):
+            d = gpu.inputs(frame, n, cls_host)
+            self._track_vehicle(ego[:2])
+            self._track_datum(ego[2])
+        with stage("bin"):
+            idx = gpu.bin(d, n, self.buffers)
+        with stage("scatter"):
+            aggregate = gpu.scatter(d, n, idx, self.z_datum)
+        with stage("fuse"):
+            gpu.fuse(aggregate)
+
+        counters = StepCounters(
+            index=frame.index, points=n_all,
+            binned=int(gpu.cp.count_nonzero(idx >= 0)),
+            cells_touched=len(aggregate), occupied=0, tested=0, cleared=0,
+            protected=0, out_of_view=0)
+        if self.ghost_removal:
+            with stage("cleanup"):
+                gpu.cleanup(aggregate.cells, ego, self.z_datum, self.handle.rings,
+                            self.buffers, d["range"], self.sensor,
+                            self.thresholds["visibility"]["range_tolerance_m"],
+                            counters)
+        gpu.synchronize()
+        self.handle.grid.mark_dirty()
+        return counters
+
     def _track_vehicle(self, ego_xy):
         """Slide each ring's window to keep the vehicle centred, in whole cells
         of that ring -- the §2.4 constraint. Sub-cell remainders are carried,
@@ -345,7 +406,10 @@ class MapEngine:
             want_y = int(np.floor(ego_xy[1] / layout.cell_m)) - buf.side // 2
             dx, dy = want_x - buf.x0, want_y - buf.y0
             if dx or dy:
-                shift(buf, dx, dy, self.handle.grid)
+                if self.gpu is None:
+                    shift(buf, dx, dy, self.handle.grid)
+                else:
+                    self.gpu.clear(shift(buf, dx, dy))
 
     @property
     def z_datum(self) -> float:
@@ -364,6 +428,9 @@ class MapEngine:
         implementation, both callers -- two spellings of a re-basing rule is
         how the map and the reference come to disagree about what a height is.
         """
+        if self.gpu is not None:
+            self._z_datum = self.gpu.track_datum(self._z_datum, ego_z)
+            return
         self._z_datum = track_datum(self.handle.grid, self._z_datum, ego_z)
 
     def _cleanup(self, frame, touched, ego, counters):
@@ -391,30 +458,23 @@ class MapEngine:
 
         m = len(occupied)
         self._cand_slots[:m] = occupied
-        floor_m = self.thresholds["visibility"]["range_tolerance_m"]
+        cx, cy, cz = self._centres(occupied, ego, self._cand["x"],
+                                           self._cand["y"], self._cand["z"])
 
         image = np.asarray(frame.range_image)
         if self.range2d.shape != image.shape[:2]:
             self.range2d = np.zeros(image.shape[:2], np.float32)
         np.copyto(self.range2d, image[:, :, 0])
 
-        if self.gpu is not None:
-            # Centres, guard and eq (32) all on the card; see
-            # DeviceKernels.cleanup_slots for why the inverse moved with it.
-            result = self.gpu.cleanup_slots(
-                occupied, touched, self.handle.grid, self.handle.rings,
-                self.buffers, ego, self.z_datum, self.range2d, self.sensor,
-                floor_m)
-        else:
-            cx, cy, cz = self._centres(occupied, ego, self._cand["x"],
-                                       self._cand["y"], self._cand["z"])
-            # The guard: a cell with a return in THIS scan is never cleared.
-            guard = self._has_return[:m]
-            np.copyto(guard, np.isin(occupied, touched))
-            result = visibility_cleanup(
-                cx, cy, cz, self.range2d, has_return_now=guard,
-                sensor=self.sensor, floor_m=floor_m,
-                protect_current_returns=True, scratch=self.vis_scratch)
+        # The guard: a cell with a return in THIS scan is never cleared.
+        guard = self._has_return[:m]
+        np.copyto(guard, np.isin(occupied, touched))
+
+        result = visibility_cleanup(
+            cx, cy, cz, self.range2d, has_return_now=guard,
+            sensor=self.sensor,
+            floor_m=self.thresholds["visibility"]["range_tolerance_m"],
+            protect_current_returns=True, scratch=self.vis_scratch)
 
         occ = self.thresholds["occupancy"]
         apply_miss(self.handle.grid["log_odds"], self._cand_slots[:m],
@@ -430,7 +490,7 @@ class MapEngine:
 
     def device_bytes(self) -> dict | None:
         """Card-side memory for a device run, pool used and reserved both;
-        None on CPU. See `gpu.device.DeviceKernels.device_bytes`."""
+        None on CPU. See `gpu.device.DeviceMap.device_bytes`."""
         return self.gpu.device_bytes() if self.gpu is not None else None
 
     def occupied_slots(self) -> np.ndarray:

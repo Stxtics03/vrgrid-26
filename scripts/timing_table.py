@@ -501,7 +501,8 @@ def run_real(args, sched=None):
     # only `engine.step` gave a FRAME row smaller than several of its own
     # stages and shares that summed to 156%.
     frames = iter(iter_pipeline(args.seq, args.frames + 1,
-                                use_patchworkpp=not args.no_patchworkpp, timer=t))
+                                use_patchworkpp=not args.no_patchworkpp, timer=t,
+                                device=getattr(args, "device", "cpu")))
     n = 0
     while True:
         t0 = time.perf_counter()
@@ -518,6 +519,37 @@ def run_real(args, sched=None):
     if n < 2:
         raise SystemExit(f"sequence {args.seq} yielded {n} frames; need at least 2")
     return t, engine, n - 1
+
+
+def run_free(args):
+    """Whole-frame latency with NO stage timer, for the device path.
+
+    The staged table synchronises the card at every stage boundary so each row
+    is honest -- and that serialises the frame. Unsynchronised, the perception
+    kernels run while Patchwork++ runs on the host, which is the configuration
+    that actually ships. This pass times only the whole frame, same frames.
+    """
+    from vrgrid.run.__main__ import iter_pipeline
+    from vrgrid.run.engine import MapEngine
+
+    t = Timer(stages=("total",))
+    engine = MapEngine(load(args.schedule), max_points=args.points,
+                       clip_class_ids=args.clip_class_ids, device=args.device)
+    frames = iter(iter_pipeline(args.seq, args.frames + 1,
+                                use_patchworkpp=not args.no_patchworkpp,
+                                device=args.device))
+    n = 0
+    while True:
+        t0 = time.perf_counter()
+        frame = next(frames, None)
+        if frame is None:
+            break
+        engine.step(frame)
+        t.record("total", (time.perf_counter() - t0) * 1e3)
+        n += 1
+        if n == 1:
+            t.reset()
+    return t
 
 
 def main() -> None:
@@ -565,6 +597,16 @@ def main() -> None:
         print(f"sequence {args.seq}, {frames} frames, schedule {args.schedule}, "
               f"{engine.handle.allocated_slots:,} slots, device {engine.device}\n")
         print_real_table(t)
+        if args.device == "cuda":
+            del engine
+            free = run_free(args)
+            m, h = free.summary()["total"], free.headroom("total")
+            print(f"\nFREE-RUNNING (no per-stage synchronisation; the card and "
+                  f"Patchwork++ overlap):\n  FRAME p50 {m['p50_ms']:.2f} ms  "
+                  f"p99 {m['p99_ms']:.2f} ms  max {m['max_ms']:.2f} ms  -> "
+                  f"{h['fps_p50']:.1f} FPS p50, {h['fps_p99']:.1f} FPS p99, "
+                  + ("meets" if h["meets_sensor_rate"] else "MISSES")
+                  + " 10 Hz at p99")
         return
 
     handle = allocate(sched, with_pyramid=not args.no_pyramid)
