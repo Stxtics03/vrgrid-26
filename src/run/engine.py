@@ -11,6 +11,11 @@ belongs somewhere else:
     cleanup  gpu.visibility.visibility_cleanup + apply_miss
     shift    gpu.shift.shift, tracking the vehicle
 
+`device="cuda"` runs scatter and cleanup on the card through
+`gpu.device.DeviceKernels`; every other stage, and the grid, stay on the host.
+The map must hash identically either way -- `scripts/gpu_parity.py` checks it
+on real frames.
+
 **Why this exists: the ghost toggle has to drive the map, not the point cloud.**
 `dashboard/pipeline_view.py` splits the moving returns into a `world/ghosts`
 entity and toggling it hides them. That is a filter on the input, and it
@@ -29,6 +34,7 @@ from dataclasses import dataclass
 import numpy as np
 from vrgrid.cell import OCC_OCCUPIED
 from vrgrid.gpu.allocators import allocate, resolve_candidate_cap
+from vrgrid.gpu.device import DeviceKernels, resolve_device
 from vrgrid.gpu.kernels import (
     CEILING_NONE,
     measurement_variance_cm2,
@@ -109,8 +115,9 @@ class MapEngine:
     def __init__(self, schedule, thresholds=None, max_points: int = 150_000,
                  max_candidates: int | None = None, ghost_removal: bool = True,
                  sensor: Sensor | None = None, clip_class_ids: bool = False,
-                 timer=None):
+                 timer=None, device: str = "cpu"):
         self.sched = schedule
+        self.device = resolve_device(device)
         self.thresholds = thresholds if thresholds is not None else load_thresholds()
         if max_candidates is not None:
             # An explicit cap overrides the config, but it has to reach
@@ -177,6 +184,15 @@ class MapEngine:
         self._cand = {n: np.zeros(cap, np.float64) for n in "xyz"}
         self._cand_slots = np.zeros(cap, np.int64)
         self._has_return = np.zeros(cap, np.bool_)
+
+        # The device half, sized from the same caps as the host scratch it
+        # stands in for, so both paths refuse the same inputs. The host scratch
+        # is still allocated above: `report()` and the memory claim describe
+        # the CPU configuration, and a device run declares its card-side bytes
+        # separately through `device_bytes()` rather than quietly changing them.
+        self.gpu = None
+        if self.device == "cuda":
+            self.gpu = DeviceKernels(len(self.handle.scratch["key"]), n_slots, cap)
 
     # -- binning ------------------------------------------------------------
 
@@ -295,15 +311,18 @@ class MapEngine:
 
         rng_m = np.sqrt(xs * xs + ys * ys + (zs) * (zs))
         with stage("scatter"):
-            aggregate = scatter_sorted(
+            columns = (
                 idx,
                 quantise_height(world[:, 2], self.z_datum),
                 quantise_weight(measurement_variance_cm2(np.maximum(rng_m, 1e-3))),
                 np.asarray(frame.reflectivity8)[:n].astype(np.uint8),
                 cls,
                 np.asarray(frame.ground)[:n].astype(bool),
-                scratch=self.handle.scratch,
             )
+            if self.gpu is not None:
+                aggregate = self.gpu.scatter(*columns)
+            else:
+                aggregate = scatter_sorted(*columns, scratch=self.handle.scratch)
         touched = np.asarray(aggregate.cells).copy()
         with stage("fuse"):
             fuse(self.handle.grid, aggregate, self.thresholds)
@@ -372,23 +391,30 @@ class MapEngine:
 
         m = len(occupied)
         self._cand_slots[:m] = occupied
-        cx, cy, cz = self._centres(occupied, ego, self._cand["x"],
-                                           self._cand["y"], self._cand["z"])
+        floor_m = self.thresholds["visibility"]["range_tolerance_m"]
 
         image = np.asarray(frame.range_image)
         if self.range2d.shape != image.shape[:2]:
             self.range2d = np.zeros(image.shape[:2], np.float32)
         np.copyto(self.range2d, image[:, :, 0])
 
-        # The guard: a cell with a return in THIS scan is never cleared.
-        guard = self._has_return[:m]
-        np.copyto(guard, np.isin(occupied, touched))
-
-        result = visibility_cleanup(
-            cx, cy, cz, self.range2d, has_return_now=guard,
-            sensor=self.sensor,
-            floor_m=self.thresholds["visibility"]["range_tolerance_m"],
-            protect_current_returns=True, scratch=self.vis_scratch)
+        if self.gpu is not None:
+            # Centres, guard and eq (32) all on the card; see
+            # DeviceKernels.cleanup_slots for why the inverse moved with it.
+            result = self.gpu.cleanup_slots(
+                occupied, touched, self.handle.grid, self.handle.rings,
+                self.buffers, ego, self.z_datum, self.range2d, self.sensor,
+                floor_m)
+        else:
+            cx, cy, cz = self._centres(occupied, ego, self._cand["x"],
+                                       self._cand["y"], self._cand["z"])
+            # The guard: a cell with a return in THIS scan is never cleared.
+            guard = self._has_return[:m]
+            np.copyto(guard, np.isin(occupied, touched))
+            result = visibility_cleanup(
+                cx, cy, cz, self.range2d, has_return_now=guard,
+                sensor=self.sensor, floor_m=floor_m,
+                protect_current_returns=True, scratch=self.vis_scratch)
 
         occ = self.thresholds["occupancy"]
         apply_miss(self.handle.grid["log_odds"], self._cand_slots[:m],
@@ -401,6 +427,11 @@ class MapEngine:
         counters.out_of_view = result.out_of_view
 
     # -- readout ------------------------------------------------------------
+
+    def device_bytes(self) -> dict | None:
+        """Card-side memory for a device run, pool used and reserved both;
+        None on CPU. See `gpu.device.DeviceKernels.device_bytes`."""
+        return self.gpu.device_bytes() if self.gpu is not None else None
 
     def occupied_slots(self) -> np.ndarray:
         """Flat slots the map currently calls OCCUPIED. What a 2.5D map view

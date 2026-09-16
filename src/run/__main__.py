@@ -165,6 +165,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Gate 3 toggle OFF: keep moving points in the main cloud "
                         "and stop running the map's visibility cleanup, so ghost "
                         "trails stay in the cells (default: both on)")
+    p.add_argument("--device", default="cpu", choices=["cpu", "cuda"],
+                   help="where the map's scatter and visibility cleanup run. "
+                        "cuda needs cupy and a card; the map is bit-identical "
+                        "either way (scripts/gpu_parity.py)")
     p.add_argument("--no-map", action="store_true",
                    help="perception only; skip the map back end entirely")
     p.add_argument("--clip-class-ids", action="store_true",
@@ -192,9 +196,13 @@ def main(argv=None) -> int:
     engine = None
     if not args.no_map:
         engine = MapEngine(sched, ghost_removal=not args.show_ghosts,
-                           clip_class_ids=args.clip_class_ids)
+                           clip_class_ids=args.clip_class_ids, device=args.device)
         print(f"map: {engine.handle.allocated_slots:,} slots preallocated, "
-              f"ghost removal {'OFF' if args.show_ghosts else 'ON'}")
+              f"ghost removal {'OFF' if args.show_ghosts else 'ON'}, "
+              f"device {engine.device}")
+        if engine.device_bytes() is not None:
+            print(f"     {engine.device_bytes()['static'] / 1e6:.2f} MB of "
+                  "scatter + cleanup buffers on the card")
 
     view = None
     if args.viz or args.save:

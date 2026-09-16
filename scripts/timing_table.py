@@ -493,7 +493,8 @@ def run_real(args, sched=None):
     t = Timer(stages=STAGES)
     engine = MapEngine(load(args.schedule) if sched is None else sched,
                        max_points=args.points,
-                       clip_class_ids=args.clip_class_ids, timer=t)
+                       clip_class_ids=args.clip_class_ids, timer=t,
+                       device=getattr(args, "device", "cpu"))
 
     # `total` has to span the WHOLE frame -- perception AND the map -- and the
     # perception half happens inside the generator, during `next()`. Wrapping
@@ -542,6 +543,10 @@ def main() -> None:
     ap.add_argument("--clip-class-ids", action="store_true",
                     help="--seq only: clip semantic ids to 15 so fusion's 4-bit "
                          "candidate accepts them (math §10.2)")
+    ap.add_argument("--device", default="cpu", choices=["cpu", "cuda"],
+                    help="--seq only: run scatter and cleanup on the card "
+                         "(src/gpu/device.py). Publish it as a second column, "
+                         "never in place of the CPU one")
     ap.add_argument("--alloc", action="store_true",
                     help="also report transient bytes per frame per stage "
                          "(separate pass; tracemalloc distorts latency)")
@@ -558,7 +563,7 @@ def main() -> None:
         print(f"numpy {np.__version__}, python {platform.python_version()}, "
               f"{platform.system()}\n")
         print(f"sequence {args.seq}, {frames} frames, schedule {args.schedule}, "
-              f"{engine.handle.allocated_slots:,} slots\n")
+              f"{engine.handle.allocated_slots:,} slots, device {engine.device}\n")
         print_real_table(t)
         return
 
