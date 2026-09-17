@@ -3,7 +3,8 @@
 #
 #   scripts/aws/t4.sh preflight      credentials, region, quota, price -- spends nothing
 #   scripts/aws/t4.sh budget         $50 monthly budget + email alert (runbook: FIRST)
-#   scripts/aws/t4.sh stage          S3 bucket; upload the FULL local dataset (84.8 GB) + checkpoint
+#   scripts/aws/t4.sh stage labelled S3 bucket; upload sequences 00-10 + labels + poses (~50 GB)
+#   scripts/aws/t4.sh stage all      ... or the full local dataset, all 22 sequences (~90 GB)
 #   scripts/aws/t4.sh launch         key pair, SG (SSH from this IP only), instance, EIP
 #   scripts/aws/t4.sh setup          clone, venv, Patchwork++, cupy, torch, data sync, tests
 #   scripts/aws/t4.sh run            T4 measurements -> results/t4/ on the instance
@@ -90,17 +91,26 @@ stage() {
         aws_ s3api put-bucket-tagging --bucket "$bucket" --tagging "TagSet=[{$TAGS}]"
         save bucket "$bucket"
     fi
-    # The WHOLE local dataset -- all 22 sequences, 43,552 scans, labels and poses
-    # for 00-10 -- so the T4 reruns every result on the same bytes the laptop
-    # measured, not a seq 08 subset. `s3 sync` resumes: re-run `stage` after a
-    # dropped connection and it uploads only what is missing.
+    # `labelled` is every sequence the roadmap's AWS work reads: frnet_finetune
+    # trains on 00-07, 09, 10 and frnet_eval scores 08. `all` adds 11-21, which
+    # have no labels. The choice is an argument, never a default. `s3 sync`
+    # resumes: re-run the same command after a dropped connection.
+    local which="${1:-}" expect seqs
     python "$HERE/scripts/data_status.py" > /dev/null || die "local dataset incomplete; fix before staging"
-    aws_ s3 sync "$VRGRID_DATA_ROOT" "s3://$bucket/dataset" --only-show-errors
+    aws_ s3 sync "$VRGRID_DATA_ROOT/poses" "s3://$bucket/dataset/poses" --only-show-errors
+    case "$which" in
+        labelled) seqs=$(seq -w 0 10) ; expect=23201 ;;
+        all)      seqs=$(seq -w 0 21) ; expect=43552 ;;
+        *) die "stage needs 'labelled' (00-10, ~50 GB) or 'all' (00-21, ~90 GB)" ;;
+    esac
+    for q in $seqs; do
+        aws_ s3 sync "$VRGRID_DATA_ROOT/sequences/$q" "s3://$bucket/dataset/sequences/$q" --only-show-errors
+    done
     aws_ s3 cp "$VRGRID_FRNET_CHECKPOINT" "s3://$bucket/checkpoints/$(basename "$VRGRID_FRNET_CHECKPOINT")"
     local n
     n=$(aws_ s3 ls "s3://$bucket/dataset/sequences/" --recursive | grep -c '/velodyne/.*\.bin$' || true)
-    echo "staged to s3://$bucket: $n velodyne scans (expect 43552)"
-    [[ "$n" == "43552" ]] || die "scan count mismatch -- re-run stage to resume"
+    echo "staged to s3://$bucket: $n velodyne scans (expect $expect for '$which')"
+    [[ "$n" == "$expect" ]] || die "scan count mismatch -- re-run stage $which to resume"
 }
 
 launch() {
@@ -214,7 +224,7 @@ status() {
 case "${1:-}" in
     preflight) preflight ;;
     budget) budget ;;
-    stage) stage ;;
+    stage) stage "${2:-}" ;;
     launch) launch ;;
     setup) setup ;;
     run) run ;;
