@@ -531,3 +531,22 @@ def test_a_banded_reference_leaves_out_exactly_what_the_map_cannot_hold(sequence
     assert banded.out_of_band_returns == 2
     assert banded.observed.sum() == plain.observed.sum()
     assert "outside the map's band" in repr(banded)
+
+
+def test_class_is_the_majority_of_all_static_returns_height_is_ground_only():
+    """One 5 cm cell: a road return on the ground, two vegetation returns
+    above it, one moving car. M*'s height must come from the ground return
+    alone, and its class from the majority of the STATIC returns --
+    vegetation -- because that is what the map's class layer is fused from.
+    Taking the class from the ground return made §7.1 bit 4 disagree at every
+    road edge with something over it (seq 09's regret step)."""
+    pts = np.array([[1.01, 2.01, -1.70], [1.02, 2.02, -0.40],
+                    [1.03, 2.03, -0.10], [1.04, 2.04, -1.00]])
+    labels = np.array([40, 70, 70, 252], dtype=np.uint32)     # road, veg, veg, moving car
+    ground = np.array([True, False, False, False])
+    ref = build_from_scans([(pts, labels, ground, np.eye(4))])
+    i, j = int(np.floor(1.01 / ref.cell_m)), int(np.floor(2.01 / ref.cell_m))
+    r, c = i - ref.i0, j - ref.j0
+    assert ref.count[r, c] == 1
+    assert ref.height_cm[r, c] == pytest.approx(-170.0)
+    assert ref.class_id[r, c] == 70

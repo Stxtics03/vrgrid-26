@@ -248,8 +248,9 @@ class _Builder:
 
     def __init__(self, cell_m: float):
         self.cell_m = cell_m
-        self.keys = []          # flat lattice keys, per scan
+        self.keys = []          # lattice keys of GROUND returns, per scan
         self.heights = []
+        self.class_keys = []    # lattice keys of EVERY static return, per scan
         self.classes = []
         self.bounds = None
 
@@ -271,19 +272,36 @@ class _Builder:
 
           None is still accepted so the synthetic path is byte-identical.
         """
-        keep = ~is_moving(label_id)
+        static = ~is_moving(label_id)
+        keep = static.copy()
         if is_ground is not None:
             keep &= np.asarray(is_ground, dtype=bool)
-        pts = np.asarray(xyz_world, dtype=np.float64)[keep]
+        world = np.asarray(xyz_world, dtype=np.float64)
+
+        # ⚑ CLASS votes come from every static return; HEIGHTS from ground
+        #   only. The map's class layer is fused from all of a cell's returns
+        #   (`fusion`, Boyer-Moore), so a road-edge cell with a hedge over it
+        #   reads vegetation there. M* used to take its class from the first
+        #   GROUND return, so it read terrain -- a different measurement --
+        #   and §7.1 bit 4 disagreed wherever something stood over the ground.
+        #   On seq 09 every map marked a drivable edge non-drivable that M*
+        #   did not, each detoured, and where the detour happened to land made
+        #   uniform 40 cm beat 20 cm by 2.5 SE (`known-limitations.md` §10).
+        sw = world[static]
+        if sw.size:
+            self.class_keys.append(np.column_stack([
+                np.floor(sw[:, 0] / self.cell_m).astype(np.int64),
+                np.floor(sw[:, 1] / self.cell_m).astype(np.int64)]))
+            self.classes.append((np.asarray(label_id, dtype=np.int64)[static] & 0xFFFF)
+                                .astype(np.uint8))
+
+        pts = world[keep]
         if pts.size == 0:
             return
-        cls = (np.asarray(label_id, dtype=np.int64)[keep] & 0xFFFF).astype(np.uint8)
-
         i = np.floor(pts[:, 0] / self.cell_m).astype(np.int64)
         j = np.floor(pts[:, 1] / self.cell_m).astype(np.int64)
         self.keys.append(np.column_stack([i, j]))
         self.heights.append(pts[:, 2] * 100.0)
-        self.classes.append(cls)
 
         lo = np.array([i.min(), j.min()])
         hi = np.array([i.max(), j.max()])
@@ -299,25 +317,36 @@ class _Builder:
         h_sum = np.zeros(H * W, dtype=np.float64)
         h2_sum = np.zeros(H * W, dtype=np.float64)
         count = np.zeros(H * W, dtype=np.int64)
-        cls_first = np.zeros(H * W, dtype=np.uint8)
-
-        for keys, heights, classes in zip(self.keys, self.heights, self.classes):
+        for keys, heights in zip(self.keys, self.heights):
             flat = (keys[:, 0] - lo[0]) * W + (keys[:, 1] - lo[1])
             np.add.at(h_sum, flat, heights)
             np.add.at(h2_sum, flat, heights * heights)
             np.add.at(count, flat, 1)
-            # First writer wins, deterministically: the scans arrive in frame
-            # order and `np.add.at`-style scatter has no defined order within a
-            # scan, so "first" is resolved by only writing where still unset.
-            unset = cls_first[flat] == 0
-            cls_first[flat[unset]] = classes[unset]
+
+        # Majority class per cell over every static return. Ties go to the
+        # lowest class id, so the result does not depend on scan order.
+        # Cells outside the ground surface's box have no height and are not
+        # stored; `block_class` only ever lets observed cells vote.
+        cls_major = np.zeros(H * W, dtype=np.uint8)
+        if self.class_keys:
+            ck = np.concatenate(self.class_keys)
+            cv = np.concatenate(self.classes).astype(np.int64)
+            inside = ((ck[:, 0] >= lo[0]) & (ck[:, 0] <= hi[0])
+                      & (ck[:, 1] >= lo[1]) & (ck[:, 1] <= hi[1]))
+            flat = (ck[inside, 0] - lo[0]) * W + (ck[inside, 1] - lo[1])
+            vote, n = np.unique(flat * 256 + cv[inside], return_counts=True)
+            cell, cls = vote // 256, vote % 256
+            order = np.lexsort((cls, -n, cell))
+            cell, cls = cell[order], cls[order]
+            first = np.r_[True, cell[1:] != cell[:-1]]
+            cls_major[cell[first]] = cls[first].astype(np.uint8)
 
         safe = np.maximum(count, 1)
         mean = np.where(count > 0, h_sum / safe, 0.0)
         within = np.where(count > 0, np.maximum(h2_sum / safe - mean * mean, 0.0), 0.0)
         return ReferenceMap(self.cell_m, lo[0], lo[1],
                             mean.reshape(H, W), count.reshape(H, W),
-                            cls_first.reshape(H, W), within.reshape(H, W))
+                            cls_major.reshape(H, W), within.reshape(H, W))
 
 
 def build_from_scans(scans, out_path=None, cell_m: float = 0.05,

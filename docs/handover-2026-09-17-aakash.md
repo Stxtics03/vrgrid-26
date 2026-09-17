@@ -101,6 +101,8 @@ the same 64 queries**. See `known-limitations.md` §10. **Seq 08's step is noise
 - ~~Seq 07's 20 cm regret spike~~ — fixed in `plan_regret.costmap_from_gridmap`
   (area-weighted footprint heights, §10). `test_regret_lattice.py`'s wall test
   premise changed with it; read §10 before reviewing that diff.
-- **Seq 09's 20 → 40 cm step** (−2.5 SE) — small, not investigated.
+- ~~Seq 09's 20 → 40 cm step~~ — fixed in `reference_map._Builder`: M*'s class is
+  now the majority of all static returns, as the map's is (heights unchanged,
+  ground only). §10.
 - **Seq 00's cross-look disagreement at ring 2** — narrowed (§9), cause open.
 - **D1, the Patchwork++ singleton** (GitHub #1) — JP's file.

@@ -1021,7 +1021,7 @@ from before that fix; §2b has the current numbers.
 
 ---
 
-## 10. The money plot's non-monotone steps — seq 07's spike was the metric, FIXED
+## 10. The money plot's non-monotone steps — both real ones were the metric, FIXED
 
 *Aakash's 2 Sep open number: "the money plot's remaining non-monotone step,
 which survives both the extent fix and 64-query averaging".*
@@ -1066,40 +1066,63 @@ count weighting (0.49 m against the reference's 0.10 m).
   (it reads the 30 cm pothole at −26 cm), which is where the information loss
   physically is.
 
-### All eleven sequences, after the fix (40 frames)
+### Seq 09's 20 → 40 cm step: §7.1 bit 4 measured two different things — FIXED
+
+After the area-weighting fix, seq 09 still read uniform 20 cm 0.101 against
+40 cm 0.017 (−0.084, 2.5 SE). The weighting fix did not touch it, so the cause
+was different. Six queries carried it, all starting at the same cells.
+
+**Cause.** M\*'s optimal path ran along a road edge that M\* called drivable
+and **every map marked non-drivable** (§7.1 bit 4), so each map detoured.
+40 cm's detour happened to tie M\*'s cost and 20 cm's did not. The class bit
+was not one measurement on the two sides. The map's class layer is fused from
+**all** of a cell's returns, so a hedge or fence over the verge reads as
+vegetation. M\* took its class from the **first ground return** in each cell,
+so the same verge read as terrain. That asymmetry was everywhere, not only on
+09. On seq 07, 5/10/20/40 set 173 class bits M\* did not have; on 09, 54.
+
+**Fix.** `reference_map._Builder` now takes each 5 cm cell's class from the
+**majority of every static return**, the same returns the map votes over.
+Heights still come from ground returns only. On 09, 5/10/20/40's extra class
+bits fell from 54 to 11, and what remains grows with cell size, which is what
+real coarsening loss looks like. Pinned by
+`test_class_is_the_majority_of_all_static_returns_height_is_ground_only`.
+
+It moves regret on other sequences too, because class penalties were part of
+every path. Seq 07's R(S) roughly halves (5/10/20/40 1.142 → 0.456); seq 00's
+5/10/20/40 rises (0.075 → 0.205), within its SE of 0.094.
+
+### All eleven sequences, after both fixes (40 frames)
 
 | seq | 5/10/20/40 | 5/10/50 | uniform 10 cm | 20 cm | 40 cm | 80 cm |
 |---|---|---|---|---|---|---|
-| 00 | 0.075 ± 0.032 | 0.075 ± 0.032 | 0.028 ± 0.016 | 0.067 ± 0.031 | 0.028 ± 0.016 | 0.028 ± 0.016 |
+| 00 | 0.205 ± 0.094 | 0.136 ± 0.067 | 0.028 ± 0.016 | 0.067 ± 0.031 | 0.028 ± 0.016 | 0.028 ± 0.016 |
 | 01 | 0.074 ± 0.028 | 0.074 ± 0.028 | 0.089 ± 0.030 | 0.089 ± 0.030 | 0.049 ± 0.017 | 0.529 ± 0.041 |
 | 02 | 0.061 ± 0.024 | 0.061 ± 0.024 | 0.077 ± 0.028 | 0.088 ± 0.029 | 0.110 ± 0.032 | 0.088 ± 0.029 |
-| 03 | 1.305 ± 0.095 | 1.278 ± 0.108 | 1.244 ± 0.128 | 1.306 ± 0.129 | 1.312 ± 0.128 | 1.472 ± 0.125 |
+| 03 | 1.278 ± 0.094 | 1.250 ± 0.107 | 1.215 ± 0.128 | 1.275 ± 0.129 | 1.281 ± 0.127 | 1.442 ± 0.124 |
 | 04 | 0.012 ± 0.008 | 0.012 ± 0.008 | 0.008 ± 0.004 | 0.011 ± 0.007 | 0.026 ± 0.010 | 0.042 ± 0.015 |
-| 05 | 0.022 ± 0.012 | 0.022 ± 0.012 | 0.049 ± 0.038 | 0.015 ± 0.011 | 0.018 ± 0.011 | 0.106 ± 0.039 |
-| 06 | 0.464 ± 0.108 | 0.464 ± 0.108 | 0.412 ± 0.076 | 0.352 ± 0.074 | 0.440 ± 0.076 | 0.531 ± 0.087 |
-| 07 | 1.142 ± 0.152 | 1.150 ± 0.152 | 1.207 ± 0.155 | 1.563 ± 0.206 | 1.686 ± 0.204 | 2.417 ± 0.232 |
+| 05 | 0.011 ± 0.006 | 0.011 ± 0.006 | 0.023 ± 0.020 | 0.010 ± 0.006 | 0.009 ± 0.005 | 0.063 ± 0.021 |
+| 06 | 0.464 ± 0.108 | 0.464 ± 0.108 | 0.382 ± 0.071 | 0.342 ± 0.071 | 0.669 ± 0.158 | 0.844 ± 0.172 |
+| 07 | 0.456 ± 0.069 | 0.464 ± 0.069 | 0.377 ± 0.064 | 0.672 ± 0.109 | 0.611 ± 0.068 | 1.336 ± 0.106 |
 | 08 | 0.077 ± 0.028 | 0.077 ± 0.028 | 0.123 ± 0.034 | 0.177 ± 0.045 | 0.121 ± 0.057 | 0.038 ± 0.015 |
-| 09 | 0.000 ± 0.000 | 0.000 ± 0.000 | 0.050 ± 0.028 | 0.101 ± 0.035 | 0.017 ± 0.008 | 0.107 ± 0.026 |
-| 10 | 1.526 ± 0.185 | 1.590 ± 0.193 | 1.191 ± 0.135 | 0.901 ± 0.158 | 1.086 ± nan | 1.268 ± 0.340 |
+| 09 | 0.000 ± 0.000 | 0.000 ± 0.000 | 0.038 ± 0.021 | 0.090 ± 0.031 | 0.121 ± 0.041 | 0.107 ± 0.026 |
+| 10 | 1.490 ± 0.178 | 1.553 ± 0.187 | 1.150 ± 0.129 | 0.870 ± 0.157 | 0.939 ± nan | 1.268 ± 0.340 |
 
-**What the paired steps say now (15 of 55 at |z| ≥ 2):**
+**What the paired steps say now (12 of 55 at |z| ≥ 2):**
 
-- **Seq 07 is monotone.** 10 → 20 cm +0.355 (3.2 SE), 20 → 40 cm +0.123
-  (2.3 SE), 40 → 80 cm +0.622 (7.7 SE).
-- **Seq 08, the sequence the handover named, is noise.** Every paired step is
-  under 1.7 SE.
-- **Coarsest-uniform cost is consistent:** 40 → 80 cm costs regret at ≥ 2 SE on
-  01, 03, 04, 05, 07 and 09 (01: +0.480, 11.9 SE).
-- **Two backward uniform steps remain, both small.** Seq 09, 20 → 40 cm
-  −0.084 (2.5 SE), unchanged by this fix and so a different cause; seq 06,
-  10 → 20 cm −0.060 (2.0 SE). With 55 paired comparisons, two or three are
-  expected past 2 SE by chance. Seq 07's 8–10 SE steps were not chance. 09 is
-  still worth a look; neither is a spike.
-- **Foveated vs uniform 10 cm** is within noise on 9 sequences. On 10,
-  uniform 10 cm is better (−0.460, 2.7 SE). The two schedules cover different
-  extents, so this is not a monotonicity question.
-- Seq 10's coarse uniform maps block most queries (n = 17 at 10 → 20 cm, and no
-  SE at 40 cm). Read those as unmeasured.
+- **No uniform curve has a backward step past 2 SE on any sequence.** Every
+  significant step between neighbouring uniform sizes is positive: coarser
+  costs regret or is indistinguishable.
+- **Seq 07:** 10 → 20 cm +0.295 (2.4 SE), 20 → 40 cm −0.061 (0.7 SE, noise),
+  40 → 80 cm +0.622 (7.7 SE).
+- **Seq 09:** 10 → 20 cm +0.051 (2.1 SE), 20 → 40 cm +0.031 (2.6 SE).
+- **Seq 08, the sequence the handover named:** noise throughout.
+- **Coarsest-uniform cost is consistent:** 40 → 80 cm at ≥ 2 SE on 01, 03, 04, 05
+  and 07 (01: +0.480, 11.9 SE).
+- **The one significant negative step** is seq 10, 5/10/50 → uniform 10 cm
+  (−0.460, 2.7 SE). The two schedules cover different extents, so this is not
+  a monotonicity question. Seq 10's coarse uniform maps block most queries
+  (n = 17 at 10 → 20 cm), so read them as unmeasured.
 
 ---
 

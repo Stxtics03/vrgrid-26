@@ -531,3 +531,9 @@ Driving the shipping code with one `Timer` shared across both halves, 200 frames
 **⚑ A test premise changed:** "uniform 20 cm misses more pothole walls" was the same leak. Neither map misses one now; the test asserts both find all 12 and the coarse map has the larger depth error.
 
 **Open:** seq 09's 20 → 40 cm step (−2.5 SE), unchanged by this fix.
+
+## 2026-09-17 (last) — Shrestha
+
+**Module:** D1 — M*'s class layer (`eval/reference_map.py`)
+
+**What happened:** Seq 09's uniform 20 → 40 cm regret step (−2.5 SE) survived the area-weighting fix. Six queries carried it, all from one road edge. M* called the edge drivable and every map called it non-drivable (§7.1 bit 4), so each map detoured, and 40 cm's detour happened to tie. The two sides measured class differently: the map votes over all of a cell's returns, M* took the first ground return. M* now takes the per-cell majority of every static return, and heights stay ground-only. Result: 09's extra class bits fall 54 → 11, 09 is monotone (+2.1, +2.6 SE), and no uniform curve on any sequence has a backward step past 2 SE. Seq 07's R(S) roughly halves, because class penalties were part of every path.
