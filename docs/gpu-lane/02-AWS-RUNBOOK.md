@@ -8,7 +8,7 @@ move.*
 
 > **Scripted, 2026-09-17:** `scripts/aws/t4.sh` does every step below in order:
 > `preflight` (spends nothing), `budget`, `stage`, `launch`, `setup`, `run`,
-> `fetch`, then `stop`. It needs the AWS CLI (`~/.local/bin/aws`) configured with
+> `fetch`, then `stop`. It stages the FULL local dataset (84.8 GB, 250 GB disk), not only seq 08. It needs the AWS CLI (`~/.local/bin/aws`) configured with
 > your own credentials. There is no terminate command, on purpose.
 
 ## 1. What we are provisioning, and why

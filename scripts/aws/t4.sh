@@ -3,7 +3,7 @@
 #
 #   scripts/aws/t4.sh preflight      credentials, region, quota, price -- spends nothing
 #   scripts/aws/t4.sh budget         $50 monthly budget + email alert (runbook: FIRST)
-#   scripts/aws/t4.sh stage          S3 bucket; upload seq 08 + poses + FRNet checkpoint
+#   scripts/aws/t4.sh stage          S3 bucket; upload the FULL local dataset (84.8 GB) + checkpoint
 #   scripts/aws/t4.sh launch         key pair, SG (SSH from this IP only), instance, EIP
 #   scripts/aws/t4.sh setup          clone, venv, Patchwork++, cupy, torch, data sync, tests
 #   scripts/aws/t4.sh run            T4 measurements -> results/t4/ on the instance
@@ -12,7 +12,7 @@
 #   scripts/aws/t4.sh status | stop | start
 #
 # Follows docs/gpu-lane/02-AWS-RUNBOOK.md: ap-south-1, g4dn.xlarge, Deep Learning
-# Base OSS Nvidia Driver AMI (Ubuntu 22.04), 150 GB gp3, tagged Project=vrgrid,
+# Base OSS Nvidia Driver AMI (Ubuntu 22.04), 250 GB gp3, tagged Project=vrgrid,
 # Owner=shrestha. There is deliberately NO terminate command: stop keeps the
 # volume for ~$0.40/day, terminate destroys it, and that should be a decision
 # made in the console, not a typo here.
@@ -25,7 +25,9 @@ set -euo pipefail
 AWS="${AWS:-$HOME/.local/bin/aws}"
 REGION="${VRGRID_AWS_REGION:-ap-south-1}"
 TYPE="g4dn.xlarge"
-DISK_GB=150
+# 250, not the runbook's 150: the whole dataset is 90 GB on disk, and the Deep
+# Learning AMI, the venv, torch and cupy take most of the rest.
+DISK_GB=250
 STATE="$HOME/.vrgrid-aws"
 KEY_NAME="vrgrid-t4"
 KEY_PATH="$HOME/.ssh/${KEY_NAME}.pem"
@@ -88,11 +90,17 @@ stage() {
         aws_ s3api put-bucket-tagging --bucket "$bucket" --tagging "TagSet=[{$TAGS}]"
         save bucket "$bucket"
     fi
-    # Runbook §4: sequence 08 is what every T4 measurement reads.
-    aws_ s3 sync "$VRGRID_DATA_ROOT/sequences/08" "s3://$bucket/dataset/sequences/08"
-    aws_ s3 cp "$VRGRID_DATA_ROOT/poses/08.txt" "s3://$bucket/dataset/poses/08.txt"
+    # The WHOLE local dataset -- all 22 sequences, 43,552 scans, labels and poses
+    # for 00-10 -- so the T4 reruns every result on the same bytes the laptop
+    # measured, not a seq 08 subset. `s3 sync` resumes: re-run `stage` after a
+    # dropped connection and it uploads only what is missing.
+    python "$HERE/scripts/data_status.py" > /dev/null || die "local dataset incomplete; fix before staging"
+    aws_ s3 sync "$VRGRID_DATA_ROOT" "s3://$bucket/dataset" --only-show-errors
     aws_ s3 cp "$VRGRID_FRNET_CHECKPOINT" "s3://$bucket/checkpoints/$(basename "$VRGRID_FRNET_CHECKPOINT")"
-    echo "staged to s3://$bucket"
+    local n
+    n=$(aws_ s3 ls "s3://$bucket/dataset/sequences/" --recursive | grep -c '/velodyne/.*\.bin$' || true)
+    echo "staged to s3://$bucket: $n velodyne scans (expect 43552)"
+    [[ "$n" == "43552" ]] || die "scan count mismatch -- re-run stage to resume"
 }
 
 launch() {
@@ -160,7 +168,7 @@ pip -q install ~/patchwork-plusplus/python
 pip -q install cupy-cuda12x torch
 python -c "import cupy, torch; print('cupy', cupy.__version__, cupy.cuda.runtime.getDeviceProperties(0)['name']); print('torch', torch.__version__, torch.cuda.get_device_name(0))"
 VRGRID_ASSETS=~/assets source scripts/env.sh
-python scripts/data_status.py || true
+python scripts/data_status.py
 python -m pytest -q -p no:cacheprovider 2>&1 | tail -3
 EOF
 }
