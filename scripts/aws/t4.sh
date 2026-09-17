@@ -184,7 +184,15 @@ python scripts/timing_table.py --seq 08 --frames 200 --device cuda > results/t4/
 python scripts/gpu_parity.py   --seq 08 --frames 200               > results/t4/parity.log       2>&1
 python scripts/vram_contention.py --seq 08 --frames 200 --pair-seconds 40 \
        --out results/t4/vram-contention.json                       > results/t4/vram_contention.log 2>&1
+# Roadmap Day 1-2: fast-scatter verified on this machine, the pretrained numbers
+# reproduced (90.3% / 65.2%), then the fine-tune -- trains on 00-07, 09, 10 and
+# refuses 08 -- scored on 08 by the same script.
+python scripts/frnet_fast_scatter.py                               > results/t4/fast_scatter_verify.log 2>&1
 python scripts/frnet_eval.py --seq 08 --frames 200 --fast-scatter  > results/t4/frnet_eval.log   2>&1
+python scripts/frnet_finetune.py --steps 600 --fast-scatter \
+       --out ~/assets/checkpoints/frnet-finetuned-t4.pth           > results/t4/frnet_finetune.log 2>&1
+python scripts/frnet_eval.py --seq 08 --frames 200 --fast-scatter \
+       --checkpoint ~/assets/checkpoints/frnet-finetuned-t4.pth    > results/t4/frnet_eval_finetuned.log 2>&1
 echo done
 EOF
 }
