@@ -247,3 +247,40 @@ def test_device_rebase_drops_evidence_exactly_as_the_host_does():
         for k, want in ref.items():
             assert np.array_equal(cp.asnumpy(eng.gpu.grid[k]), want), (ego, k)
         assert (ref["height_variance"] == 0).any(), "the fixture must leave the band"
+
+
+@needs_cuda
+@pytest.mark.parametrize("band", [None, 1.0])
+def test_device_bitfield_matches_host(band, monkeypatch):
+    """The 7.1 bitfield on the card equals the host bitfield on every ring of
+    both schedules. `band=1.0` widens the hypot guard band until most geometric
+    cells are settled on the host, so the host-resolution path is exercised
+    and must agree too."""
+    import copy
+
+    from vrgrid.gpu import traversability_device as TD
+    from vrgrid.gpu.allocators import allocate
+    from vrgrid.grid import traversability as T
+    from vrgrid.grid.schedule import load_thresholds
+
+    if band is not None:
+        monkeypatch.setattr(TD, "BAND", band)
+    th = copy.deepcopy(load_thresholds())
+    rng = np.random.default_rng(4)
+    for name in ("5/10/20/40", "5/10/50"):
+        s = load(name)
+        al = allocate(s, th, commit_pages=False)
+        soa = {k: v.copy() for k, v in al.grid.items()}
+        n = soa["ground_height"].size
+        soa["ground_height"][:] = rng.integers(-350, 450, n)
+        soa["ground_height"][: n // 2] = (np.arange(n // 2) % 37)      # smooth ramps too
+        soa["ceiling_height"][:] = np.where(rng.random(n) < 0.3, 32767, rng.integers(-350, 450, n))
+        soa["height_variance"][:] = rng.integers(0, 256, n)
+        soa["obs_count"][:] = rng.integers(0, 6, n)
+        soa["semantic_class"][:] = rng.integers(0, 256, n)
+        rings = [(slice(r.offset, r.offset + r.side * r.side), r.side) for r in al.rings]
+        host, dev_soa = soa, {k: v.copy() for k, v in soa.items()}
+        T.update(host, s, rings, th)
+        T.update(dev_soa, s, rings, th, device="cuda")
+        assert np.array_equal(host["traversability"], dev_soa["traversability"]), name
+        assert (host["traversability"] & 2).any(), "slope bit never set"

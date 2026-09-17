@@ -543,3 +543,11 @@ Driving the shipping code with one `Timer` shared across both halves, 200 frames
 **Module:** D3 — roadmap Days 1, 4 and 7 in the GPU/CUDA column, the parts that do not need AWS
 
 **What happened:** Laptop baselines for the AWS reproduction: fast-scatter is exact (max) and within 2 ulp (mean); FRNet reproduces at 90.3% / 65.2%. R9's missing rows on real seq 08: split/merge 49.6 ms, traversability 37.4 ms, pyramid 2.8 ms p50. The pool is full and refuses ~3,500 gate requests a frame, so split/merge + traversability would set the latency of any pipeline that enables them. R4's cost: −0.17% cells written per frame, against the ~0.1% expected. Stage attrition added to the engine, identical on both devices: on seq 08 only 20.9% of returns win a range-image pixel. `docs/gpu-lane/10-R9-R4-ATTRITION.md`.
+
+## 2026-09-17 (night) — Shrestha
+
+**Module:** D3 — speeding up split/merge and traversability (Aakash's `src/grid`, at Shrestha's request)
+
+**What happened:** R9 showed that the refinement pool (49.6 ms) and the §7.1 bitfield (37.4 ms) would set the latency of any pipeline that enables them. Both are now much faster, with decisions unchanged. `gate.apply` makes the same sequential decisions without per-request table scans: 8.5 ms. `traversability.bitfield` uses lookup tables and cached stencils on the host (30 ms), or runs on the card via `update(device="cuda")` (4.8 ms), with a guard band for CUDA's last-bit `hypot` differences. Seq 08: map hash, pool state and gate counts identical frame by frame. The references are kept and pinned by equivalence tests, and the gate test is mutation-checked. Pyramid unchanged at 2.8 ms. Total ~87 → ~16 ms.
+
+**Flagged for Aakash:** a refined cell that fires again has its block re-split from the parent every frame, overwriting its children. Left unchanged.

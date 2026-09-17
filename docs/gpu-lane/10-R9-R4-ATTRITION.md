@@ -27,15 +27,57 @@ python scripts/r9_stages.py --seq 08 --frames 200     # 10 warm-up frames discar
   pyramid memory: 2.73 MB nodes + 0.38 MB scratch
 ```
 
-**What this says, plainly.** The pyramid is cheap: 2.8 ms, 36× headroom. **The
-refinement pool and the §7.1 pass are not.** Together they are 87 ms p50, four
-times the whole 22 ms CUDA frame. The pool is full after a few frames and then
-refuses about 3,500 gate requests a frame, while still paying to evaluate every
-one in a Python per-cell loop. If both are enabled in a deployed 10 Hz pipeline,
-**they, not the GPU frame, set the latency.** Both are CPU-only NumPy/Python in
-`src/grid` today. Moving them onto the card, or making the gate stop
-re-evaluating refused cells, is the obvious next GPU item. Flagged here, not
-started.
+**What this said.** The pyramid was cheap (2.8 ms). The refinement pool and
+the §7.1 pass were not: 87 ms p50 together, four times the 22 ms CUDA frame.
+The pool fills after a few frames and then refuses ~3,500 gate requests a
+frame, and each refusal paid for full owner-table scans in a Python loop.
+
+### Sped up, same bits — 2026-09-17
+
+```
+python scripts/r9_stages.py --seq 08 --frames 200 --traversability-device cuda
+
+  stage             p50 ms   p99 ms   max ms     n
+  split_merge         8.50    18.17    22.22   200      was 49.59 / 63.50
+  traversability      4.78     6.31     6.55   200      was 37.35 / 49.22  (30.07 / 37.80 on the host path)
+  pyramid             2.80     3.74     3.78   200
+```
+
+**~87 ms → ~16 ms**, and **nothing the stages decide changed.** Over 60 frames
+of seq 08, the fast paths and the originals produce the same map hash, the
+same pool owner table, scores and cells, and the same gate counts on every
+frame (`real_equiv` check, 0 frames differing; `819b5b5c…` both ways).
+
+- **Split/merge (`gate.apply`).** Same sequential decisions, made cheaply.
+  Rings, centres and priorities for all fired cells at once; blocks found
+  through a dict mirroring the owner table; free blocks taken lowest index
+  first; the eviction `argmin` recomputed only after a score changes (a
+  refusal changes nothing). Release asks `lattice.migrate_ring_many` once for
+  every held block. The per-cell original is kept as `gate.apply_reference`.
+  `tests/test_gate_fast.py` compares them after every frame, with the normal
+  pool and with an 8-block pool that evicts and refuses constantly. The test
+  was mutation-checked: taking the highest free block, or evicting on a tied
+  score, both fail it.
+- **Traversability (`traversability.bitfield`).** On the host, per-ring
+  stencils cached, the variance `exp` and the class `isin` replaced by
+  256-entry lookup tables built from the same functions, and bits OR-ed in
+  place: 37 → 30 ms. `traversability.update(device="cuda")` computes it on the
+  card (`gpu/traversability_device.py`): 4.8 ms including upload and download.
+  Every operation used is exact on the device except `hypot`, which differs
+  from glibc in the last bit on ~30% of inputs. Cells whose device slope is
+  within a relative 1e-12 of the threshold are therefore settled on the host
+  with NumPy's `hypot`, so the bits are exact by construction. Opt-in (the
+  harness reads `gm.traversability_device`); the default stays on the host.
+  Pinned by `test_bitfield_matches_the_reference` and
+  `test_device_bitfield_matches_host`.
+
+⚑ **For Aakash, noticed while reading `gate.apply`, and deliberately left
+  unchanged:** when a cell that already holds a block fires again, `acquire`
+  returns the existing block and `_fill` re-splits the parent over it every
+  frame. Whatever the refined children had accumulated is overwritten with
+  the parent's split each time the gate fires. That may be intended (the
+  pool has no separate child fusion yet) or it may not; changing it would
+  change results, so it is his call.
 
 ## 2. R4: what the block-level ring rule costs in cells (Day 4)
 

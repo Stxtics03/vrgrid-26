@@ -40,6 +40,8 @@ def main():
     ap.add_argument("--seq", default="08")
     ap.add_argument("--frames", type=int, default=200)
     ap.add_argument("--schedule", default="5/10/20/40")
+    ap.add_argument("--traversability-device", default="cpu", choices=["cpu", "cuda"],
+                    help="compute the 7.1 bitfield on the card (bit-identical)")
     args = ap.parse_args()
     warnings.simplefilter("ignore")
 
@@ -53,6 +55,7 @@ def main():
 
     sched = load(args.schedule)
     gm = H.build_gridmap(sched)
+    gm.traversability_device = args.traversability_device
     # The pyramid is sized from the same ring layouts as the map it reduces.
     pyr = allocate(sched, load_thresholds(), commit_pages=False, with_pyramid=True).pyramid
     rings = gm.allocation.rings
@@ -68,7 +71,7 @@ def main():
     # after it, so it is never committed and never counted as a frame.
     def timed_trav(g):
         t0 = time.perf_counter()
-        real_trav(g)
+        real_trav(g)            # writes host bits; the download synchronises
         t1 = time.perf_counter()
         build(pyr, g.soa, rings)
         frame["pending"] = ((t1 - t0) * 1e3, (time.perf_counter() - t1) * 1e3)
@@ -97,7 +100,8 @@ def main():
 
     s = timer.summary()
     print(f"sequence {args.seq}, {args.frames} frames after {WARMUP} warm-up, schedule "
-          f"{args.schedule}, eval-harness map with refinement pool ({wall:.0f} s wall)")
+          f"{args.schedule}, eval-harness map with refinement pool, traversability on "
+          f"{args.traversability_device} ({wall:.0f} s wall)")
     print(f"\n  {'stage':<15} {'p50 ms':>8} {'p99 ms':>8} {'max ms':>8} {'n':>5}")
     for name in ("split_merge", "traversability", "pyramid"):
         r = s[name]

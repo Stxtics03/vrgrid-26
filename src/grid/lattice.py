@@ -309,6 +309,40 @@ def migrate_ring(x, y, schedule, current_ring, speed_ms: float = 0.0,
 
 
 
+def migrate_ring_many(x, y, schedule, current_ring, speed_ms: float = 0.0,
+                      vehicle_xy_m=(0.0, 0.0), yaw_rad: float = 0.0, buffers=None):
+    """`migrate_ring` over arrays of cells, element for element identical.
+
+    The refinement pool asks this for every block it holds, every frame -- up
+    to 512 scalar calls, each rebuilding `ring_of`'s windows and constants,
+    which was a measurable share of `gate.apply`. The branches of the scalar
+    version become masks; `ring_of` is evaluated once over all cells, which
+    gives the same per-cell answer because it is elementwise.
+    `test_migrate_ring_many_matches_the_scalar` pins the equivalence.
+    """
+    where = {"vehicle_xy_m": vehicle_xy_m, "yaw_rad": yaw_rad, "buffers": buffers}
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    cur = np.asarray(current_ring, dtype=np.int64)
+    if x.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    eps = schedule.hysteresis_eps
+    d = np.atleast_1d(d_aniso(x, y, schedule, speed_ms))
+    radii = np.array([r.half_width_m for r in schedule.rings], dtype=np.float64)
+    target = np.atleast_1d(ring_of(x, y, schedule, speed_ms, **where)).astype(np.int64)
+
+    outside = cur == OUTSIDE
+    safe = np.where(outside, 0, cur)
+    coarser = ~outside & (d > radii[safe] * (1.0 + eps))
+    finer = ~outside & ~coarser & (safe > 0) & (d < radii[np.maximum(safe - 1, 0)])
+    out = cur.copy()
+    out[outside] = target[outside]
+    out[finer] = target[finer]
+    up = np.where(target == OUTSIDE, OUTSIDE, np.maximum(target, cur + 1))
+    out[coarser] = up[coarser]
+    return out
+
+
 # --- the frame path: zero-allocation binning, math §2.1 + §6.1 --------------
 #
 # `ring_of`, `d_aniso` and `i_ring` above are the reference implementations:

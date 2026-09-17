@@ -568,7 +568,9 @@ def run_sequence(gm: GridMap, scans, recentre: bool = True,
 def _update_traversability(gm) -> None:
     rings = [(slice(r.offset, r.offset + r.side * r.side), r.side)
              for r in gm.allocation.rings]
-    traversability.update(gm.soa, gm.schedule, rings, gm.thresholds)
+    # `traversability_device` is opt-in ("cuda"); the bits are identical either way.
+    traversability.update(gm.soa, gm.schedule, rings, gm.thresholds,
+                          device=getattr(gm, "traversability_device", "cpu"))
 
 
 @dataclass
