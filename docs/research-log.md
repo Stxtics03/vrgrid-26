@@ -521,3 +521,13 @@ Driving the shipping code with one `Timer` shared across both halves, 200 frames
 **GPU on real data:** CPU and GPU pipelines are bit-identical on every frame for the first 200 frames of all eleven sequences, and across the whole of seq 08 (4,071 frames). The pool held 145.08 MB at the end of the drive, the same as after frame 0. New `scripts/engine_eval.py` scores the ENGINE's map rather than the eval harness's map. On all eleven sequences the CPU and CUDA engines give identical metrics, e.g. seq 08 ring 1 2.33 cm / ρ 1.16. `docs/gpu-lane/08-GPU-FRAME-LOOP.md`.
 
 **Not covered:** sequences 11–21 (no labels) and any simulator (CARLA, D7, never started).
+
+## 2026-09-17 (late) — Shrestha
+
+**Module:** D1 — plan regret (`eval/plan_regret.py`)
+
+**What happened:** Seq 07's uniform 20 cm regret spike (2.237, between 10 cm's 1.519 and 40 cm's 1.667, ~8 SE paired) came from the metric, not the map. `costmap_from_gridmap` weighted each map cell under a 25 cm planning cell by its observation count, so a coarse cell clipping the footprint's corner leaked its height in. Where 20 cm beats against 25 cm, every 1 m, this made phantom step and slope walls: on M*'s optimal paths, 23 + 27 at 20 cm, against 16 + 20 at 10 cm. Now each cell is weighted by the share of the footprint it covers, the reference side's own estimator, and seq 07 reads 1.207 / 1.563 / 1.686 / 2.417 for uniform 10 / 20 / 40 / 80 cm, monotone. Ruled out on the way: the OR of stored roughness/class bits (moves R(S) < 0.01).
+
+**⚑ A test premise changed:** "uniform 20 cm misses more pothole walls" was the same leak. Neither map misses one now; the test asserts both find all 12 and the coarse map has the larger depth error.
+
+**Open:** seq 09's 20 → 40 cm step (−2.5 SE), unchanged by this fix.

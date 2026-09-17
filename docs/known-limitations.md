@@ -1021,47 +1021,85 @@ from before that fix; §2b has the current numbers.
 
 ---
 
-## 10. The money plot's non-monotone steps — mostly noise, two are real
+## 10. The money plot's non-monotone steps — seq 07's spike was the metric, FIXED
 
 *Aakash's 2 Sep open number: "the money plot's remaining non-monotone step,
 which survives both the extent fix and 64-query averaging".*
 
-`eval_synthetic.py` now prints R(S) ± SE per schedule and every adjacent step
-**paired over the same 64 planning queries** — the schedules are planned on
+`eval_synthetic.py` prints R(S) ± SE per schedule, and every adjacent step
+**paired over the same 64 planning queries**. The schedules are planned on
 identical start/goal pairs, so the per-query difference cancels how hard each
-query is, which the unpaired SEs do not. All eleven sequences, 40 frames:
+query is, which unpaired SEs do not.
+
+### Seq 07's uniform 20 cm spike — found and fixed
+
+Before, seq 07 read uniform 10 / 20 / 40 cm = 1.519 / **2.237** / 1.667. The
+paired steps were +0.718 (8.5 SE) and −0.650 (7.9 SE), which is not query
+noise. The spike was spread across queries: the top five carried only 24% of
+it, so it was systematic.
+
+**Cause: `costmap_from_gridmap` weighted each map cell under a 25 cm planning
+cell by its observation COUNT.** A coarse cell clipping one corner of the
+footprint got the weight of all its returns, so a neighbour's height leaked
+into the planning cell. Where the map lattice beats against the 25 cm planning
+lattice, every 1 m at 20 cm, the leak alternated into phantom steps. On M*'s
+own optimal paths the 20 cm map set 23 slope and 27 step walls that M* did not
+have, against 16 + 20 at 10 cm and 7 + 12 at 40 cm, and every detour around
+them is scored as regret. Two other suspects were measured and ruled out.
+Taking roughness and class off the OR of stored per-cell bits moved seq 07's
+R(S) by less than 0.01. The class excess is the same with or without the OR,
+and comes from content (fusion votes over all returns, M\* over ground only).
+
+**Fix: weight by the share of the footprint each cell covers**, the number of
+the 5 cm-spaced samples that land in it. That is the reference side's own
+estimator: `block_stats` is a mean over the block's observed 5 cm cells, and for
+a 5 cm map the two sides are now identical. Observation counts still decide
+confidence (bit 5), where evidence is the question. Pinned by
+`test_a_footprint_height_is_weighted_by_area_not_by_returns`, which fails under
+count weighting (0.49 m against the reference's 0.10 m).
+
+⚑ One test's premise changed with it, and is recorded rather than weakened.
+  `test_regret_lattice.py` asserted that uniform 20 cm MISSES more of M*'s
+  walls, the pothole rims, than 5/10/20/40. It did, through the same leak.
+  With area weighting neither map misses one. The test now asserts that both
+  find all 12, and that the coarse grid carries the larger depth error at them
+  (it reads the 30 cm pothole at −26 cm), which is where the information loss
+  physically is.
+
+### All eleven sequences, after the fix (40 frames)
 
 | seq | 5/10/20/40 | 5/10/50 | uniform 10 cm | 20 cm | 40 cm | 80 cm |
 |---|---|---|---|---|---|---|
-| 00 | 0.035 ± 0.018 | 0.035 ± 0.018 | 0.028 ± 0.016 | 0.028 ± 0.016 | 0.067 ± 0.031 | 0.028 ± 0.016 |
-| 01 | 0.074 ± 0.028 | 0.074 ± 0.028 | 0.089 ± 0.030 | 0.089 ± 0.030 | 0.054 ± 0.019 | 0.531 ± 0.042 |
-| 02 | 0.138 ± 0.063 | 0.138 ± 0.063 | 0.088 ± 0.029 | 0.088 ± 0.029 | 0.113 ± 0.033 | 0.088 ± 0.029 |
-| 03 | 1.287 ± 0.122 | 1.181 ± 0.115 | 1.240 ± 0.129 | 1.245 ± 0.129 | 1.312 ± 0.128 | 1.438 ± 0.129 |
-| 04 | 0.012 ± 0.008 | 0.012 ± 0.008 | 0.014 ± 0.007 | 0.026 ± 0.010 | 0.026 ± 0.010 | 0.055 ± 0.021 |
-| 05 | 0.022 ± 0.012 | 0.022 ± 0.012 | 0.047 ± 0.038 | 0.026 ± 0.018 | 0.069 ± 0.031 | 0.132 ± 0.044 |
-| 06 | 0.582 ± 0.143 | 0.582 ± 0.143 | 0.468 ± 0.102 | 0.469 ± 0.091 | 0.419 ± 0.076 | 0.581 ± 0.084 |
-| 07 | 1.313 ± 0.182 | 1.313 ± 0.182 | 1.519 ± 0.180 | 2.237 ± 0.226 | 1.667 ± 0.200 | 2.338 ± 0.242 |
-| 08 | 0.127 ± 0.034 | 0.127 ± 0.034 | 0.073 ± 0.028 | 0.106 ± 0.033 | 0.124 ± 0.057 | 0.077 ± 0.018 |
-| 09 | 0.004 ± 0.004 | 0.004 ± 0.004 | 0.105 ± 0.035 | 0.105 ± 0.035 | 0.013 ± 0.007 | 0.150 ± 0.031 |
-| 10 | 1.315 ± 0.175 | 1.480 ± 0.194 | 1.172 ± 0.131 | 1.655 ± 0.396 | 2.441 ± 0.338 | 1.732 ± 0.315 |
+| 00 | 0.075 ± 0.032 | 0.075 ± 0.032 | 0.028 ± 0.016 | 0.067 ± 0.031 | 0.028 ± 0.016 | 0.028 ± 0.016 |
+| 01 | 0.074 ± 0.028 | 0.074 ± 0.028 | 0.089 ± 0.030 | 0.089 ± 0.030 | 0.049 ± 0.017 | 0.529 ± 0.041 |
+| 02 | 0.061 ± 0.024 | 0.061 ± 0.024 | 0.077 ± 0.028 | 0.088 ± 0.029 | 0.110 ± 0.032 | 0.088 ± 0.029 |
+| 03 | 1.305 ± 0.095 | 1.278 ± 0.108 | 1.244 ± 0.128 | 1.306 ± 0.129 | 1.312 ± 0.128 | 1.472 ± 0.125 |
+| 04 | 0.012 ± 0.008 | 0.012 ± 0.008 | 0.008 ± 0.004 | 0.011 ± 0.007 | 0.026 ± 0.010 | 0.042 ± 0.015 |
+| 05 | 0.022 ± 0.012 | 0.022 ± 0.012 | 0.049 ± 0.038 | 0.015 ± 0.011 | 0.018 ± 0.011 | 0.106 ± 0.039 |
+| 06 | 0.464 ± 0.108 | 0.464 ± 0.108 | 0.412 ± 0.076 | 0.352 ± 0.074 | 0.440 ± 0.076 | 0.531 ± 0.087 |
+| 07 | 1.142 ± 0.152 | 1.150 ± 0.152 | 1.207 ± 0.155 | 1.563 ± 0.206 | 1.686 ± 0.204 | 2.417 ± 0.232 |
+| 08 | 0.077 ± 0.028 | 0.077 ± 0.028 | 0.123 ± 0.034 | 0.177 ± 0.045 | 0.121 ± 0.057 | 0.038 ± 0.015 |
+| 09 | 0.000 ± 0.000 | 0.000 ± 0.000 | 0.050 ± 0.028 | 0.101 ± 0.035 | 0.017 ± 0.008 | 0.107 ± 0.026 |
+| 10 | 1.526 ± 0.185 | 1.590 ± 0.193 | 1.191 ± 0.135 | 0.901 ± 0.158 | 1.086 ± nan | 1.268 ± 0.340 |
 
-**14 of 55 paired steps are at |z| ≥ 2.** What they say:
+**What the paired steps say now (15 of 55 at |z| ≥ 2):**
 
-- **Seq 08 — the case the handover named — is noise.** Every step, paired,
-  is within 1.6 SE. No explanation is owed.
-- **Coarsest-uniform cost is real and consistent:** 40 → 80 cm raises R(S)
-  at ≥ 2 SE on 01, 03, 04, 05, 07, 09 and 10 (01: +0.477, 11.5 SE).
-- **Two non-monotone steps are REAL, and new open items.** Seq 07: uniform
-  20 cm is worse than both 10 cm (+0.718, 8.5 SE) and 40 cm (−0.650, 7.9 SE).
-  Seq 09: 40 cm beats 20 cm (−0.092, 2.6 SE). Something about 20 cm cells on
-  those two sequences — a §7.1 step/slope threshold landing between cell
-  sizes is the first thing to check. Not investigated.
-- **Foveated vs uniform 10 cm:** indistinguishable on 9 of 11. Better on 07
-  (uniform 10 cm worse by +0.214, 5.2 SE), worse on 06 (−0.278, 2.1 SE).
-- 5/10/20/40 and 5/10/50 are identical on 9 sequences because the planning
-  window lies inside the rings the two schedules share.
-- Seq 10's uniform 20–80 cm steps pair only 3 queries (most are blocked on one
-  side); read them as unmeasured.
+- **Seq 07 is monotone.** 10 → 20 cm +0.355 (3.2 SE), 20 → 40 cm +0.123
+  (2.3 SE), 40 → 80 cm +0.622 (7.7 SE).
+- **Seq 08, the sequence the handover named, is noise.** Every paired step is
+  under 1.7 SE.
+- **Coarsest-uniform cost is consistent:** 40 → 80 cm costs regret at ≥ 2 SE on
+  01, 03, 04, 05, 07 and 09 (01: +0.480, 11.9 SE).
+- **Two backward uniform steps remain, both small.** Seq 09, 20 → 40 cm
+  −0.084 (2.5 SE), unchanged by this fix and so a different cause; seq 06,
+  10 → 20 cm −0.060 (2.0 SE). With 55 paired comparisons, two or three are
+  expected past 2 SE by chance. Seq 07's 8–10 SE steps were not chance. 09 is
+  still worth a look; neither is a spike.
+- **Foveated vs uniform 10 cm** is within noise on 9 sequences. On 10,
+  uniform 10 cm is better (−0.460, 2.7 SE). The two schedules cover different
+  extents, so this is not a monotonicity question.
+- Seq 10's coarse uniform maps block most queries (n = 17 at 10 → 20 cm, and no
+  SE at 40 cm). Read those as unmeasured.
 
 ---
 
