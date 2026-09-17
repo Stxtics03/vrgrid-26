@@ -2,6 +2,7 @@
 # The T4 column: one g4dn.xlarge, scripted end to end. [Shrestha]
 #
 #   scripts/aws/t4.sh preflight      credentials, region, quota, price -- spends nothing
+#   scripts/aws/t4.sh dryrun         EC2 DryRun of the exact launch: is a T4 allowed on this plan? free
 #   scripts/aws/t4.sh budget         $50 monthly budget + email alert (runbook: FIRST)
 #   scripts/aws/t4.sh stage labelled S3 bucket; upload sequences 00-10 + labels + poses (~50 GB)
 #   scripts/aws/t4.sh stage all      ... or the full local dataset, all 22 sequences (~90 GB)
@@ -146,6 +147,21 @@ stage() {
     [[ "$n" == "$expect" ]] || die "scan count mismatch -- re-run stage $which to resume"
 }
 
+dryrun() {
+    # AWS answers "DryRunOperation" when the request WOULD succeed and an
+    # authorization / unsupported error when it would not. Nothing is created.
+    local out
+    out=$(aws_ ec2 run-instances --dry-run --image-id "$(ami)" --instance-type "$TYPE" \
+          --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=150,VolumeType=gp3,DeleteOnTermination=true}" \
+          2>&1 || true)
+    if grep -q "DryRunOperation" <<< "$out"; then
+        echo "dry run: $TYPE launch would succeed in $REGION"
+    else
+        echo "$out" >&2
+        die "dry run refused -- $TYPE cannot be launched on this account as it stands"
+    fi
+}
+
 launch() {
     [[ -z "$(load instance)" ]] || die "instance $(load instance) already recorded; use start/status"
     if [[ ! -f "$KEY_PATH" ]]; then
@@ -197,6 +213,9 @@ setup() {
     creds=$("$AWS" sts get-session-token --duration-seconds 3600 \
             --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text)
     read -r AK SK ST <<< "$creds"
+    # Power-off timer for the setup session, like `run` has: if this laptop
+    # drops off mid-install, the instance still stops within 5 h.
+    ssh_ "sudo shutdown -h +300 'vrgrid setup: 5 h cap'"
     ssh_ "bash -s" <<EOF
 set -euo pipefail
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
@@ -271,6 +290,7 @@ status() {
 case "${1:-}" in
     preflight) preflight ;;
     budget) budget ;;
+    dryrun) dryrun ;;
     stage) stage "${2:-}" ;;
     launch) launch ;;
     setup) setup ;;
