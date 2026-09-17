@@ -494,3 +494,20 @@ Driving the shipping code with one `Timer` shared across both halves, 200 frames
 **Final headline after both fixes:** ring 1 ρ 1.36 [1.16–1.53] (between-cell) / 1.22 [1.11–1.36] (with within-cell term); ring 0 ρ 1.17 [1.13–1.29]. The figures in the entry above predate the band fix.
 
 **Source:** `python scripts/eval_synthetic.py --seq <00..10> --frames 40`; `known-limitations.md` §11.
+
+## 2026-09-17 (evening) — Shrestha
+
+**Module:** D3 — VRAM attribution and contention (`03-CUDA-PORT-PLAN.md` §5, §6)
+
+**What happened:** `scripts/vram_contention.py` runs five configurations, each in its own process: a bare CUDA context, the grid alone, FRNet alone, both in one loop, and both as two concurrent processes. The run was on the RTX 5050 laptop, seq 08, 200 frames. The full write-up is `docs/gpu-lane/09-VRAM-CONTENTION.md`, and the raw record is its JSON.
+
+**Numbers:**
+- **Declared vs pool.** Declared device memory is 145.08 MB, and cupy's pool holds 145.1 MB. Of that, 107 MB is the §10.4 cleanup and 10.9 MB is the grid.
+- **Process footprint.** The grid process occupies 594 MiB on the card: 86 MiB context and 237 MB cupy cache.
+- **FRNet.** 40 MB of weights, a 1.6 GB allocated peak, 4.1 GB reserved.
+- **Card peak.** Both together peak at 4.7 GB of 8 GB.
+- **Latency.** Grid alone is 22.0 / 27.8 ms and FRNet alone 91.3 / 98.7 ms (p50 / p99). In one loop the frame is 122.8 / 130.3 ms, 8.4% over the sum, and misses 10 Hz. As two processes the grid runs at 52.8 / 69.1 ms (+140% at p50) but still meets 10 Hz.
+
+**⚑ Power cap:** every FRNet configuration ran at the laptop's software power cap (0x4, 96 W). The T4 column remains open.
+
+**So what:** R9b now has a table in which every megabyte is attributed. The contention result gives a latency reason, on top of the evaluation reason, to keep segmentation out of the map's loop.

@@ -148,10 +148,7 @@ The codec table test needs no card and runs in CI; the rest skip without one.
 
 ## Hand-offs, not done here
 
-- **`dashboard/__main__.py:66`** builds `MapEngine` without `device`, so
-  `python -m vrgrid.dash` stays on CPU. `python -m vrgrid.run --viz --device
-  cuda` is the GPU dashboard today. Passing it through is one line for the
-  dashboard owner.
-- **`dashboard/gpu_stats.py` docstring** ("`src/gpu/` is NumPy on the CPU") is
-  out of date for `--device cuda`.
-- **T4 column** on the AWS instance, per port plan §7.
+- ~~`python -m vrgrid.dash` on CPU only~~ — `--device cuda`, done 2026-09-17.
+- ~~`dashboard/gpu_stats.py` docstring~~ — corrected 2026-09-17.
+- VRAM attribution and FRNet contention — done, `09-VRAM-CONTENTION.md`.
+- **T4 column** on the AWS instance, per port plan §7 — still open.
