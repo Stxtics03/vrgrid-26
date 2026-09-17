@@ -199,6 +199,8 @@ def payload(dtype):
     """`quantise_height(world z, datum)` and
     `quantise_weight(measurement_variance_cm2(max(range, 1e-3)))`, with the
     range taken in the POINT dtype exactly as `MapEngine.step` takes it."""
+    from vrgrid.gpu.kernels import Z_MAX_CM, Z_MIN_CM
+
     c = "float" if np.dtype(dtype) == np.float32 else "double"
     t = np.dtype(dtype).name
     return _kernel(f"payload_{c}",
@@ -206,6 +208,7 @@ def payload(dtype):
         "float64 sp2, float64 cos2, float64 datum100, bool has_datum",
         "int16 zcm, int32 wq",
         rf"""
+        const double ZMIN = {float(Z_MIN_CM)!r}, ZMAX = {float(Z_MAX_CM)!r};
         {c} x = pts[ncols * i], y = pts[ncols * i + 1], z = pts[ncols * i + 2];
         {c} s = x * x + y * y;
         s = s + z * z;
@@ -231,9 +234,9 @@ def payload(dtype):
         double zc = world[3 * i + 2] * 100.0;
         if (has_datum) zc = zc - datum100;
         zc = nearbyint(zc);
-        if (zc < -200.0 || zc > 600.0) wq = 0;   // kernels.out_of_band
-        if (zc < -200.0) zc = -200.0;
-        if (zc > 600.0) zc = 600.0;
+        if (zc < ZMIN || zc > ZMAX) wq = 0;   // kernels.out_of_band
+        if (zc < ZMIN) zc = ZMIN;
+        if (zc > ZMAX) zc = ZMAX;
         zcm = (short)zc;
         """)
 

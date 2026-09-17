@@ -86,7 +86,7 @@ estimators making one pass each agree exactly, 0 of 1.48 M points differing.
 | # | item | notes |
 |---|---|---|
 | ~~**N-1**~~ | ~~Ring 3 on 08 / 09 / 10~~ **FIXED 2026-09-17.** Out-of-band heights were fused and re-basing hid saturation. 08 ρ 1.84 → 1.03. | `known-limitations` §11 |
-| **N-5** | **The band's floor is ~2–3 m below road level.** Far-field downhill ground leaves it; seq 04 ring 3 got worse (20.6 → 24.5 cm) at the edge. | Rebalancing the 8 m band is a team decision; memory unchanged. `known-limitations` §11. |
+| ~~**N-5**~~ | ~~Band floor ~2–3 m below road level~~ **REBALANCED 2026-09-17** to −3.5 / +4.5 m (still 8 m), chosen by survey of all eleven sequences. Seq 04 ring 3 24.5 → 18.2 cm; every ring 3 within 4% of its own returns. | `known-limitations` §11 |
 | **N-2** | **Seq 07 uniform 20 cm regret spike** (+0.72 vs 10 cm, −0.65 vs 40 cm, ~8 SE paired) and **seq 09** 40 cm < 20 cm (2.6 SE). | Real, not query noise. A §7.1 threshold landing between cell sizes is the first check. `known-limitations` §10. |
 | **N-3** | **Seq 00 ring 2**: ρ 2.20 → 1.02 against its own returns. | Cross-look disagreement at 20–50 m, not coarsening. Cause open. `known-limitations` §9. |
 | **N-4** | GitHub #6 ("dashboard/ has been removed") is stale since PR #7 brought Rerun back. | Shrestha's own issue; close it when convenient. |

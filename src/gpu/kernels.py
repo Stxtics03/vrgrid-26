@@ -47,8 +47,30 @@ from vrgrid.gpu import compat
 WEIGHT_SCALE = 1024
 WEIGHT_MAX = 1 << 20
 
-# Vertical extent -2 to +6 m, in the 1 cm units heights are stored in.
-Z_MIN_CM, Z_MAX_CM = -200, 600
+# Vertical extent -3.5 to +4.5 m about the datum, in the 1 cm units heights are
+# stored in. The datum is floor(road z) in 1 m steps (`shift.datum_step`), so the
+# road itself is always 0-1 m above it.
+#
+# ⚑ Rebalanced 2026-09-17 from -2 / +6 m. Still 8 m, so no memory figure moves
+#   and the dense-3D baseline counts the same voxels. The old split kept only
+#   2-3 m below the road and 5-6 m above it, and far-field downhill ground left
+#   the band first (`known-limitations.md` §11). Surveyed over all eleven
+#   labelled sequences, every 10th frame, ground returns beyond 10 m:
+#
+#       split           lost, median seq   lost, mean seq
+#       [-2.0, +6.0]         0.384%            1.265%
+#       [-3.0, +5.0]         0.031%            0.620%
+#       [-3.5, +4.5]         0.009%            0.541%     <- this
+#       [-4.0, +4.0]         0.052%            0.604%
+#       [-4.5, +3.5]         0.110%            0.828%
+#
+#   Below -3.5 the uphill loss grows faster than the downhill loss shrinks.
+#   The top stays clear of §7.1's clearance test: +4.5 m is the road (at most
+#   +1 m) plus the 1.8 m vehicle height with 1.7 m left for rising ground, so a
+#   ceiling clamped at the top can never read as a clearance failure over road
+#   inside the band. What no 8 m placement holds is seq 01's embankments, 11 m
+#   below the carriageway (3.3% of its far ground).
+Z_MIN_CM, Z_MAX_CM = -350, 450
 
 # Packed class key: point_id * CLASS_RADIX + class_id. Taking the integer
 # minimum of that key yields the lowest-numbered point in the cell AND its
@@ -392,7 +414,7 @@ def scatter_sorted(idx, z_cm, w_q, refl, class_id, is_ground, point_id=None,
     # nothing. int32 * bool writes back into the int32 buffer in place.
     xp.multiply(w, g, out=w)
 
-    # w peaks at 2^20 and z at 600 cm: the product needs 64 bits and the int32
+    # w peaks at 2^20 and |z| at 450 cm: the product needs 64 bits and the int32
     # inputs would silently wrap without `dtype`, which is the overflow that
     # would look like a plausible map. Buffered per chunk, so no temporary.
     xp.multiply(w, z, out=wz, dtype=np.int64)

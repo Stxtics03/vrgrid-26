@@ -54,7 +54,7 @@ Full write-up: `docs/known-limitations.md` §8; status block at the top of
   With the term in, seq 08's R(S) went 0.127 → 2.497: within-cell variance is
   sensor noise as much as terrain, and the map side of the costmap has none.
   Roughness keeps its old definition.
-- Result (final, after the band fix): ring 0 ρ **1.17 [1.13–1.29]**, n = 11. Ring 1 reads 1.36 on the between-cell spread and 1.22 with the term —
+- Result (final, after the band fix): ring 0 ρ **1.17 [1.13–1.29]**, n = 11. Ring 1 reads 1.39 on the between-cell spread and 1.25 with the term —
   the flattering direction you predicted, so §2b publishes both.
 
 ## 3. §9.2 against only what each ring received. `reference_map.py`, `harness.py`
@@ -77,9 +77,9 @@ map** (unchanged under M\*|ring) — traced to the 8 m band and fixed, §3b.
 Out-of-band ground returns now carry no height weight in `scatter`, and M\* is
 built with `band=True` so it leaves out exactly those. My half is
 `gpu/kernels.py`, `gpu/shift.py` and the CUDA kernels. 08 ring 3: ρ 1.84 → 1.03.
-Seq 04 ring 3 is worse at the band floor, and the reason is traced in
-`known-limitations.md` §11 — please read it before deciding whether to rebalance
-the band.
+The band is rebalanced to −3.5 / +4.5 m (still 8 m), chosen by a survey of all
+eleven sequences; seq 04's ring 3, which the fix alone made worse, recovered to
+18.2 cm. `known-limitations.md` §11.
 
 ## 4. §2b regenerated, all eleven sequences
 

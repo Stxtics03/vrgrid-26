@@ -29,7 +29,7 @@ import numpy as np
 from vrgrid.eval import metrics
 from vrgrid.eval.reference_map import ReferenceMap, RingObservations
 from vrgrid.gpu.allocators import allocate, bytes_allocated
-from vrgrid.gpu.kernels import CEILING_NONE, out_of_band
+from vrgrid.gpu.kernels import CEILING_NONE, Z_MAX_CM, Z_MIN_CM, out_of_band
 from vrgrid.gpu.shift import RingBuffer, shift, track_datum
 from vrgrid.grid import gate, traversability
 from vrgrid.grid.fusion import fuse, initialise, scatter
@@ -72,7 +72,7 @@ def uniform_schedule(cell_m: float, half_width_m: float = 100.0,
     s = Schedule(
         name=name, base_cell_m=base_cell_m,
         rings=[Ring(0, half_width_m, cell_m, cells, 0.0)],
-        total_cells=cells, vertical_extent_m=(-2.0, 6.0),
+        total_cells=cells, vertical_extent_m=(Z_MIN_CM / 100.0, Z_MAX_CM / 100.0),
         hysteresis_eps=hysteresis_eps, anisotropy=Anisotropy(),
     )
     validate(s)

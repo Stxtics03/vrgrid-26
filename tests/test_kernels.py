@@ -12,6 +12,7 @@ from vrgrid.gpu.kernels import (
     SORTED_SCRATCH_POINT_FIELDS,
     WEIGHT_MAX,
     Z_MAX_CM,
+    Z_MIN_CM,
     CellAggregate,
     grid_bytes,
     measurement_variance_cm2,
@@ -74,11 +75,22 @@ def test_weights_are_integers_and_never_zero():
 
 
 def test_heights_clamp_to_the_vertical_extent():
-    """-2 to +6 m. Overpasses are out of scope, and an unclamped value would
-    silently wrap in int16."""
-    z = quantise_height(np.array([-9.0, -2.0, 0.0, 6.0, 9.0]))
+    """-3.5 to +4.5 m about the datum. Overpasses are out of scope, and an
+    unclamped value would silently wrap in int16."""
+    z = quantise_height(np.array([-9.0, -3.5, 0.0, 4.5, 9.0]))
     assert z.dtype == np.int16
-    assert z.tolist() == [-200, -200, 0, 600, 600]
+    assert z.tolist() == [-350, -350, 0, 450, 450]
+
+
+def test_the_band_is_the_one_the_schedules_declare():
+    """The clamp and `vertical_extent_m` are one number in two places; the
+    dense-3D baseline and the memory claim are computed from the second."""
+    from vrgrid.gpu.kernels import Z_MAX_CM, Z_MIN_CM
+    from vrgrid.grid.schedule import load
+
+    for name in ("5/10/20/40", "5/10/50"):
+        assert load(name).vertical_extent_m == (Z_MIN_CM / 100.0, Z_MAX_CM / 100.0)
+    assert Z_MAX_CM - Z_MIN_CM == 800, "8 m: every memory figure assumes it"
 
 
 # --- aggregation -------------------------------------------------------------
@@ -447,7 +459,7 @@ def test_the_weighted_mean_rounds_symmetrically_about_zero():
     entire ground plane, against a §3.2 noise floor of 0.8 cm at 5 m.
     """
     w = 4000
-    z_cm = np.arange(-200, 601)
+    z_cm = np.arange(Z_MIN_CM, Z_MAX_CM + 1)
     agg = CellAggregate(
         np.arange(z_cm.size, dtype=np.int64), (z_cm * w).astype(np.int64),
         np.full(z_cm.size, w, np.int64), np.ones(z_cm.size, np.int32),

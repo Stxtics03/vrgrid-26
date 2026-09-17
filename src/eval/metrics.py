@@ -133,7 +133,7 @@ swapped for its replacement.
   so the memory objection no longer applies. Pass it as `reference` and every
   metric here scores against it (`_compared` asks it `for_ring`). Across all
   eleven sequences the effect is NOT second order: ring 2's median RMSE is
-  9.50 cm against M* and 2.62 cm against its own returns. What that difference
+  8.82 cm against M* and 2.46 cm against its own returns. What that difference
   is -- cross-look disagreement, not coarsening -- and why rho ~ 1.03 against
   it is not a headline, is `known-limitations.md` §9. The synthetic figures
   above are left as they were measured.
@@ -144,8 +144,8 @@ scored population, and rho moves by up to 0.06 per ring on the synthetic
 sequence. **§2b's table should be regenerated with this fix before rho is
 quoted to two decimals.** The finding survives in shape -- 0.06 does not move
 rho out of its band -- but the second decimal is not currently earned.
-*(Regenerated 2026-09-17: ring 1 rho 1.36 [1.16-1.53] on the between-cell
-spread, 1.22 [1.11-1.36] with the within-cell term; §2b.)*
+*(Regenerated 2026-09-17: ring 1 rho 1.39 [1.16-1.53] on the between-cell
+spread, 1.25 [1.11-1.33] with the within-cell term; §2b.)*
 """
 
 import numpy as np

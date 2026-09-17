@@ -511,3 +511,13 @@ Driving the shipping code with one `Timer` shared across both halves, 200 frames
 **⚑ Power cap:** every FRNet configuration ran at the laptop's software power cap (0x4, 96 W). The T4 column remains open.
 
 **So what:** R9b now has a table in which every megabyte is attributed. The contention result gives a latency reason, on top of the evaluation reason, to keep segmentation out of the map's loop.
+
+## 2026-09-17 (night) — Shrestha
+
+**Module:** D3 — the band rebalanced, and the GPU pipeline on every labelled sequence
+
+**Band:** −2 / +6 m became −3.5 / +4.5 m, still 8 m wide. The split was chosen by surveying ground returns beyond 10 m on all eleven sequences (every 10th frame): the median share outside the band fell from 0.384% to 0.009%, and the mean from 1.265% to 0.541%. Against the eval, ring 3's median RMSE went 12.96 → 10.38 cm and seq 04's ring 3 recovered (24.47 → 18.24 cm). Every ring 3 now sits within 4% of its own returns (ρ 1.01–1.04). Headline: ring 1 ρ 1.39 [1.16–1.53] on the between-cell spread and 1.25 [1.11–1.33] with the within-cell term; ring 0 1.17 [1.13–1.29]. `known-limitations.md` §11.
+
+**GPU on real data:** CPU and GPU pipelines are bit-identical on every frame for the first 200 frames of all eleven sequences, and across the whole of seq 08 (4,071 frames). The pool held 145.08 MB at the end of the drive, the same as after frame 0. New `scripts/engine_eval.py` scores the ENGINE's map rather than the eval harness's map. On all eleven sequences the CPU and CUDA engines give identical metrics, e.g. seq 08 ring 1 2.33 cm / ρ 1.16. `docs/gpu-lane/08-GPU-FRAME-LOOP.md`.
+
+**Not covered:** sequences 11–21 (no labels) and any simulator (CARLA, D7, never started).

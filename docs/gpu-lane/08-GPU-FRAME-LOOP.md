@@ -56,7 +56,8 @@ image (NaN-aware), inverse index, reflectivity bytes, semantic labels, motion
 flags, every counter, and the full-grid hash. Patchwork++ runs once and both
 paths get its mask; running it twice would compare D1, not the GPU.
 
-- **identical on 200 / 200 frames**, final map hash `a9f979df7cb1910ac3358fe46191ea65`
+- **identical on 200 / 200 frames**, final map hash `c680d22153c832658fedb256e41b40bf`
+  (after the band rebalance to −3.5 / +4.5 m; `a9f979df7cb1910ac3358fe46191ea65` before it)
   (after the 8 m band fix, `known-limitations.md` §11: `payload` zeroes the weight
   of out-of-band ground and `rebase_heights` drops evidence that leaves the band;
   `4e180a121d7b5aaac95df6a97fe2374b` before it, same day).
@@ -65,6 +66,54 @@ paths get its mask; running it twice would compare D1, not the GPU.
   used to be dropped are now binned -- and the two paths still agree.)
 - 7,609,197 cells cleared by §10.4 over the run, so the comparison exercises the cleanup
 - also identical with `--max-points 100000`, where the engine truncates each scan
+
+## On real data — every labelled sequence (2026-09-17)
+
+Two questions, kept apart. **Does the GPU pipeline build the same map as the
+CPU pipeline?** `gpu_parity.py` answers that, comparing perception outputs,
+counters and the full-grid hash after **every** frame. **Is that map accurate?**
+`scripts/engine_eval.py` answers that, scoring the engine's own map, not the
+eval harness's CPU map, against the same M\* with the same §9 metrics, and
+requiring the CPU and CUDA engines to agree on every number.
+
+```bash
+python scripts/gpu_parity.py --seq <00..10> --frames 200
+python scripts/gpu_parity.py --seq 08 --frames 4071        # the whole drive, 45.7 m of climb
+python scripts/engine_eval.py --seq <00..10> --frames 40    # accuracy of the GPU map
+```
+
+| seq | parity, frames identical | final hash | cells cleared §10.4 | GPU map ring 1 RMSE cm / ρ | ring 3 RMSE cm / ρ | CPU engine metrics identical |
+|---|---|---|---|---|---|---|
+| 00 | 200/200 | `375bc8d1…` | 2,326,258 | 6.48 / 1.26 | 10.94 / 1.34 | yes |
+| 01 | 200/200 | `6a4058b7…` | 6,123,319 | 2.05 / 1.29 | 9.41 / 1.34 | yes |
+| 02 | 200/200 | `cc794104…` | 6,658,543 | 2.30 / 1.22 | 15.03 / 1.44 | yes |
+| 03 | 200/200 | `f2b86fb0…` | 4,729,703 | 12.39 / 1.29 | 6.84 / 1.15 | yes |
+| 04 | 200/200 | `6f1bb46e…` | 2,605,289 | 4.02 / 1.20 | 18.23 / 1.25 | yes |
+| 05 | 200/200 | `11f529c7…` | 3,253,047 | 3.37 / 1.33 | 12.16 / 1.21 | yes |
+| 06 | 200/200 | `a210f555…` | 3,331,162 | 3.12 / 1.25 | 12.55 / 1.14 | yes |
+| 07 | 200/200 | `d90f49f6…` | 2,393,890 | 2.57 / 1.13 | 13.89 / 1.28 | yes |
+| 08 | 200/200 | `c680d221…` | 7,648,836 | 2.33 / 1.16 | 3.89 / 1.05 | yes |
+| 09 | 200/200 | `47995658…` | 4,634,922 | 3.40 / 1.27 | 10.63 / 1.45 | yes |
+| 10 | 200/200 | `b3e47136…` | 4,383,550 | 2.79 / 1.11 | 2.80 / 1.15 | yes |
+
+Across all eleven labelled SemanticKITTI sequences, the GPU pipeline builds
+**bit-identical maps to the CPU pipeline on every frame checked**, and those
+maps score the same against M\*. The accuracy is in line with the eval
+harness's table (`known-limitations.md` §2b). The two are not identical,
+because the engine also runs §10.4 cleanup and slides its datum every frame.
+
+**The whole of seq 08, all 4,071 frames** (the sequence with 45.7 m of climb,
+so every datum step and band edge is exercised): **identical on every frame**,
+final hash `33a54623145c7ae73b30b7410c0eae0b`, 94,903,565 cells cleared by
+§10.4. cupy's pool held **145.08 MB used at the end of the drive, the same as
+after frame 0**. The device memory bound holds over a full sequence, not only
+a short one; reserved settled at 385.8 MB.
+
+**What this does not cover.** Sequences 11–21 have no labels, and the pipeline
+takes semantics from the `.label` files, so they cannot run. There is **no
+simulator integration**: CARLA (open item D7) was never started. The synthetic
+scenes the unit tests use run on the card in `tests/test_device.py`. They are
+analytic, and do not substitute for a simulator.
 
 ## What it took to make "identical" true
 

@@ -90,6 +90,8 @@ import tracemalloc
 import numpy as np
 from vrgrid.gpu.allocators import allocate
 from vrgrid.gpu.kernels import (
+    Z_MAX_CM,
+    Z_MIN_CM,
     measurement_variance_cm2,
     quantise_height,
     quantise_weight,
@@ -264,7 +266,7 @@ def make_candidates(rng, n):
     """
     theta = rng.uniform(-np.pi, np.pi, n)
     r = np.sqrt(rng.uniform(1.0, MAX_RANGE_M ** 2, n))
-    return r * np.cos(theta), r * np.sin(theta), rng.uniform(-2.0, 6.0, n)
+    return r * np.cos(theta), r * np.sin(theta), rng.uniform(Z_MIN_CM / 100.0, Z_MAX_CM / 100.0, n)
 
 
 class _Untimed:
