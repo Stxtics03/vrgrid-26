@@ -37,6 +37,8 @@ from dataclasses import dataclass
 import numpy as np
 from vrgrid.cell import OCC_OCCUPIED
 from vrgrid.gpu.allocators import allocate, resolve_candidate_cap
+from vrgrid.gpu.attrition import codes as attrition_codes
+from vrgrid.gpu.attrition import counts as attrition_counts
 from vrgrid.gpu.device import (
     DeviceFrame,
     DeviceMap,
@@ -92,6 +94,9 @@ class StepCounters:
     protected: int           # would have cleared; had a return this scan
     out_of_view: int
     truncated: int = 0       # occupied cells DROPPED by max_candidate_cells
+    # Per-stage return counts (`gpu.attrition`), when the engine was built with
+    # attrition=True; None otherwise.
+    attrition: dict | None = None
 
     @property
     def protected_fraction(self) -> float:
@@ -125,8 +130,12 @@ class MapEngine:
     def __init__(self, schedule, thresholds=None, max_points: int = 150_000,
                  max_candidates: int | None = None, ghost_removal: bool = True,
                  sensor: Sensor | None = None, clip_class_ids: bool = False,
-                 timer=None, device: str = "cpu"):
+                 timer=None, device: str = "cpu", attrition: bool = False):
         self.sched = schedule
+        # Opt-in: counting stages costs a few full-length masks per frame, and
+        # the default frame loop allocates nothing it does not need.
+        self.attrition = attrition
+        self._attr = None
         self.device = resolve_device(device)
         self.thresholds = thresholds if thresholds is not None else load_thresholds()
         if max_candidates is not None:
@@ -224,6 +233,15 @@ class MapEngine:
             yaw_rad = self._yaw
         return bin_points(xw, yw, self.sched, self.buffers, self.idx,
                           self.bin_scratch, 0.0, vehicle_xy_m, yaw_rad)
+
+    def attrition_codes(self) -> np.ndarray:
+        """Terminal pipeline stage per return of the LAST frame, as host uint8
+        (`gpu.attrition` codes), for a map colouring. Needs attrition=True, and
+        must be read before the next `step()` overwrites the frame buffers."""
+        if self._attr is None:
+            raise RuntimeError("build the engine with attrition=True and step it first")
+        c = attrition_codes(*self._attr)
+        return c.get() if hasattr(c, "get") else c
 
     def _set_vehicle(self, frame, ego):
         """Vehicle position and heading for this frame's ring decision.
@@ -361,6 +379,12 @@ class MapEngine:
             index=frame.index, points=len(pts), binned=int((idx >= 0).sum()),
             cells_touched=len(touched), occupied=0, tested=0, cleared=0,
             protected=0, out_of_view=0)
+        if self.attrition:
+            ground = np.asarray(frame.ground)[:n].astype(bool)
+            self._attr = (len(pts), idx, ground, w_q)
+            counters.attrition = attrition_counts(len(pts), idx, ground, w_q,
+                                                  np.asarray(frame.moving),
+                                                  np.asarray(frame.inverse_index))
         if self.ghost_removal:
             with stage("cleanup"):
                 self._cleanup(frame, touched, ego, counters)
@@ -410,6 +434,14 @@ class MapEngine:
             binned=int(gpu.cp.count_nonzero(idx >= 0)),
             cells_touched=len(aggregate), occupied=0, tested=0, cleared=0,
             protected=0, out_of_view=0)
+        if self.attrition:
+            w_q = gpu.w_q[:n]
+            self._attr = (n_all, idx, d["ground"], w_q)
+            if isinstance(frame, DeviceFrame):
+                moving, inverse = frame._p.moving[:n_all], frame._p.inverse
+            else:
+                moving, inverse = np.asarray(frame.moving), np.asarray(frame.inverse_index)
+            counters.attrition = attrition_counts(n_all, idx, d["ground"], w_q, moving, inverse)
         if self.ghost_removal:
             with stage("cleanup"):
                 gpu.cleanup(aggregate.cells, ego, self.z_datum, self.handle.rings,

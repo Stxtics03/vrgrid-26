@@ -67,14 +67,17 @@ def main(argv=None) -> int:
     from vrgrid.run.engine import MapEngine
 
     sched = load(args.schedule)
+    # attrition=True: the per-stage return counts are part of the counters
+    # compared below, so stage attrition is checked on both devices every frame.
     engines = {d: MapEngine(sched, ghost_removal=not args.show_ghosts, device=d,
-                            max_points=args.max_points)
+                            max_points=args.max_points, attrition=True)
                for d in ("cpu", "cuda")}
     perception = DevicePerception()
     ground.reset_estimator()
     use_pw = not args.no_patchworkpp
 
     n = cleared = 0
+    stages = {}
     for i, (points, labels, pose) in enumerate(
             loader.scans(args.seq, max_frames=args.frames, start_frame=args.start_frame)):
         index = args.start_frame + i
@@ -102,6 +105,8 @@ def main(argv=None) -> int:
                   f"  cuda {h_gpu}  {c_gpu}")
             return 1
         cleared += c_gpu.cleared
+        for k, v in c_gpu.attrition.items():
+            stages[k] = stages.get(k, 0) + v
         n += 1
         if n % 25 == 0:
             print(f"  frame {index}: identical -- perception and map; "
@@ -118,6 +123,13 @@ def main(argv=None) -> int:
           f"labels, motion, counters, map hash")
     print(f"final map hash {map_hash(engines['cuda'].handle.grid)}; "
           f"{cleared:,} cells cleared by §10.4")
+    pts = stages["points"]
+    print("stage attrition over the run (identical on both devices, every frame): "
+          + ", ".join(f"{k} {stages[k] / pts:.2%}" for k in
+                      ("capped", "outside_map", "nonground", "ground_out_of_band",
+                       "ground_fused"))
+          + f"; beside the chain: moving {stages['moving'] / pts:.2%}, "
+            f"projected {stages['projected'] / pts:.2%}")
     print(f"device: {b['static'] / 1e6:.2f} MB map + buffers, pool used "
           f"{b['pool_used'] / 1e6:.2f} MB, reserved {b['pool_reserved'] / 1e6:.2f} MB")
     return 0

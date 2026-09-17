@@ -537,3 +537,9 @@ Driving the shipping code with one `Timer` shared across both halves, 200 frames
 **Module:** D1 — M*'s class layer (`eval/reference_map.py`)
 
 **What happened:** Seq 09's uniform 20 → 40 cm regret step (−2.5 SE) survived the area-weighting fix. Six queries carried it, all from one road edge. M* called the edge drivable and every map called it non-drivable (§7.1 bit 4), so each map detoured, and 40 cm's detour happened to tie. The two sides measured class differently: the map votes over all of a cell's returns, M* took the first ground return. M* now takes the per-cell majority of every static return, and heights stay ground-only. Result: 09's extra class bits fall 54 → 11, 09 is monotone (+2.1, +2.6 SE), and no uniform curve on any sequence has a backward step past 2 SE. Seq 07's R(S) roughly halves, because class penalties were part of every path.
+
+## 2026-09-17 (evening, laptop items) — Shrestha
+
+**Module:** D3 — roadmap Days 1, 4 and 7 in the GPU/CUDA column, the parts that do not need AWS
+
+**What happened:** Laptop baselines for the AWS reproduction: fast-scatter is exact (max) and within 2 ulp (mean); FRNet reproduces at 90.3% / 65.2%. R9's missing rows on real seq 08: split/merge 49.6 ms, traversability 37.4 ms, pyramid 2.8 ms p50. The pool is full and refuses ~3,500 gate requests a frame, so split/merge + traversability would set the latency of any pipeline that enables them. R4's cost: −0.17% cells written per frame, against the ~0.1% expected. Stage attrition added to the engine, identical on both devices: on seq 08 only 20.9% of returns win a range-image pixel. `docs/gpu-lane/10-R9-R4-ATTRITION.md`.
