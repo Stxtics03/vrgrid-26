@@ -237,56 +237,84 @@ def payload(dtype):
         """)
 
 
-def bin_points(dtype):
+def bin_points():
     """`grid.lattice.bin_points` (ring_of_into + lattice index + toroidal slot)
     for one point. `tab` is 7 x n_rings int64: k, side, x0, y0, offset, x0 mod
-    side, y0 mod side -- `_fill_ring_tables`, packed."""
-    c = "float" if np.dtype(dtype) == np.float32 else "double"
-    t = np.dtype(dtype).name
-    return _kernel(f"bin_{c}",
-        f"raw {t} pts, int64 ncols, raw float64 world, raw float64 radii, "
-        "int64 n_rings, float64 a_f, float64 a_s, float64 a_r, int64 floor_ring, "
-        "float64 rear_floor_m, float64 c0, raw int64 tab",
+    side, y0 mod side -- `_fill_ring_tables`, packed. `per` is 3 x n_rings
+    float64: block-centre offset x, offset y, heading half-extent --
+    `lattice._descent_constants`, packed.
+
+    The ring is decided per world-lattice block, coarse to fine, exactly as
+    `ring_of_into` does: every float operation below is that function's, in
+    its order, so a block on a boundary lands in the same ring on both."""
+    return _kernel("bin_block",
+        "raw float64 world, raw float64 radii, int64 n_rings, float64 a_f, "
+        "float64 a_s, float64 a_r, int64 floor_ring, float64 rear_floor_m, "
+        "float64 c0, float64 cy, float64 sy, raw float64 per, raw int64 tab",
         "int64 idx",
         r"""
-        double x = (double)pts[ncols * i], y = (double)pts[ncols * i + 1];
-        double cheb = fabs(x), ay = fabs(y);
-        cheb = cheb >= ay ? cheb : ay;
-        long long geom = 0;
-        for (long long L = 0; L < n_rings; ++L) if (cheb >= radii[L]) geom++;
+        const long long N = n_rings;
+        long long fx = (long long)np_floor_divide(world[3 * i], c0);
+        long long fy = (long long)np_floor_divide(world[3 * i + 1], c0);
 
-        double fwd = x >= 0.0 ? x : 0.0;
-        fwd = fwd / a_f;
-        double rear = -x;
-        rear = rear >= 0.0 ? rear : 0.0;
-        rear = rear / a_r;
-        double d = fwd >= rear ? fwd : rear;
-        double side = fabs(y) / a_s;
-        d = d >= side ? d : side;
-        long long lvl = 0;
-        for (long long L = 0; L < n_rings; ++L) if (d >= radii[L]) lvl++;
-        if (geom > lvl) lvl = geom;
-        if (floor_ring >= 0 && x < 0.0 && fabs(x) < rear_floor_m && geom <= floor_ring) {
-            if (lvl > floor_ring) lvl = floor_ring;
+        long long tx = floordiv_i64(fx, tab[N - 1]) - tab[2 * N + N - 1];
+        long long ty = floordiv_i64(fy, tab[N - 1]) - tab[3 * N + N - 1];
+        long long Wt = tab[N + N - 1];
+        long long lvl = (tx >= 0 && tx < Wt && ty >= 0 && ty < Wt) ? N - 1 : -1;
+
+        for (long long M = N - 1; M >= 1 && lvl == M; --M) {
+            long long kM = tab[M], WP = tab[N + M - 1];
+            long long r = kM / tab[M - 1];
+            long long bx = floordiv_i64(fx, kM), by = floordiv_i64(fy, kM);
+            long long ex = bx * r - tab[2 * N + M - 1];
+            long long ey = by * r - tab[3 * N + M - 1];
+            bool fits = ex >= 0 && ex <= WP - r && ey >= 0 && ey <= WP - r;
+
+            double h = per[3 * M + 2];
+            double xc = (double)(bx * kM);
+            xc = xc * c0;
+            xc = xc + per[3 * M];
+            double yc = (double)(by * kM);
+            yc = yc * c0;
+            yc = yc + per[3 * M + 1];
+            double u = xc * cy;
+            double t = yc * sy;
+            u = u + t;
+            double v = yc * cy;
+            t = xc * sy;
+            v = v - t;
+            double fwd = u - h;
+            fwd = fwd >= 0.0 ? fwd : 0.0;
+            fwd = fwd / a_f;
+            double rear = u + h;
+            rear = -rear;
+            rear = rear >= 0.0 ? rear : 0.0;
+            rear = rear / a_r;
+            double dd = fwd >= rear ? fwd : rear;
+            double side = fabs(v);
+            side = side - h;
+            side = side >= 0.0 ? side : 0.0;
+            side = side / a_s;
+            dd = dd >= side ? dd : side;
+            bool admit = dd < radii[M - 1];
+            if (floor_ring >= 0 && M > floor_ring && u < 0.0 && fabs(u) < rear_floor_m)
+                admit = true;
+            if (fits && admit) lvl = M - 1;
         }
-        if (lvl > n_rings - 1) lvl = n_rings - 1;
-        if (geom >= n_rings) lvl = -1;
 
         long long lv = lvl > 0 ? lvl : 0;
-        long long k = tab[lv], W = tab[n_rings + lv];
-        long long ix = (long long)np_floor_divide(world[3 * i], c0);
-        long long iy = (long long)np_floor_divide(world[3 * i + 1], c0);
-        ix = floordiv_i64(ix, k);
-        iy = floordiv_i64(iy, k);
-        ix -= tab[2 * n_rings + lv];
+        long long k = tab[lv], W = tab[N + lv];
+        long long ix = floordiv_i64(fx, k);
+        long long iy = floordiv_i64(fy, k);
+        ix -= tab[2 * N + lv];
         bool live = ix >= 0 && ix < W;
-        iy -= tab[3 * n_rings + lv];
+        iy -= tab[3 * N + lv];
         live = live && iy >= 0 && iy < W;
-        ix += tab[5 * n_rings + lv];
+        ix += tab[5 * N + lv];
         if (ix >= W) ix -= W;
-        iy += tab[6 * n_rings + lv];
+        iy += tab[6 * N + lv];
         if (iy >= W) iy -= W;
-        long long slot = iy * W + ix + tab[4 * n_rings + lv];
+        long long slot = iy * W + ix + tab[4 * N + lv];
         idx = (live && lvl >= 0) ? slot : -1;
         """)
 

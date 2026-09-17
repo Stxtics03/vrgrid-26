@@ -254,6 +254,51 @@ committed; `.gitignore` excludes them by design.)*
 
 ## 2b. Accuracy across ALL eleven labelled sequences — the headline result
 
+### Regenerated 2026-09-17 — this table supersedes the one below it
+
+`python scripts/eval_synthetic.py --seq <00..10> --frames 40`, schedule
+5/10/20/40, per-sequence pose source, Patchwork++. Three changes since the
+2 Sep table, all in the scored numbers and none in the map's memory:
+§7's scoring fix (score a ring only where it still answers), §8's per-block
+ring rule, and **`spread` now includes the within-cell variance**, which is
+what gives ring 0 a ρ at all (the deferred fix described below, now done).
+
+| seq | r0 RMSE | **r0 ρ** | r1 RMSE | r1 ρ | r2 RMSE | r2 ρ | r3 RMSE | r3 ρ |
+|---|---|---|---|---|---|---|---|---|
+| 00 | 2.73 | 1.24 | 6.42 | 1.26 | 33.54 | 2.20 | 9.43 | 1.26 |
+| 01 | 1.59 | 1.23 | 2.09 | 1.30 | 3.83 | 1.33 | 10.04 | 1.32 |
+| 02 | 1.35 | 1.12 | 8.13 | 1.37 | 14.24 | 1.28 | 15.03 | 1.43 |
+| 03 | 5.26 | 1.29 | 12.60 | 1.30 | 15.96 | 1.38 | 7.58 | 1.16 |
+| 04 | 0.91 | 1.14 | 3.96 | 1.19 | 12.36 | 1.24 | 20.61 | 1.25 |
+| 05 | 1.26 | 1.17 | 3.73 | 1.36 | 11.01 | 1.37 | 14.78 | 1.20 |
+| 06 | 4.20 | 1.11 | 2.92 | 1.23 | 9.22 | 1.30 | 12.90 | 1.12 |
+| 07 | 1.77 | 1.25 | 2.83 | 1.14 | 5.99 | 1.14 | 13.64 | 1.19 |
+| 08 | 1.17 | 1.15 | 2.31 | 1.16 | 4.02 | 1.08 | 54.80 | 1.84 |
+| 09 | 1.83 | 1.16 | 3.27 | 1.25 | 4.79 | 1.25 | 25.55 | 1.64 |
+| 10 | 1.60 | 1.16 | 3.57 | 1.18 | 6.52 | 1.29 | 10.58 | 1.82 |
+
+```
+                    rho, spread incl. within-cell     rho, between-cell only (2 Sep definition)
+ring 0:  median 1.16 [1.11-1.29]                      -- (not computable)
+ring 1:  median 1.25 [1.14-1.37]                      1.39 [1.22-1.53]
+ring 2:  median 1.29 [1.08-2.20]                      1.33 [1.09-2.38]
+ring 3:  median 1.26 [1.12-1.84]                      1.26 [1.13-1.87]
+RMSE medians (cm), unaffected by the spread definition:
+         r0 1.60 [0.91-5.26]  r1 3.57 [2.09-12.60]  r2 9.22 [3.83-33.54]  r3 13.64 [7.58-54.80]
+```
+
+**What to quote.** Ring 0 now has a ρ, and it is the best of any ring, which is
+what §9.3 predicts for the finest cell. But the within-cell variance is sensor
+noise and pose jitter as much as terrain, so it moves every ρ toward 1 — ring 1
+from 1.39 to 1.25. **Quote both**: "ρ = 1.25 at ring 1 (1.14–1.37, n = 11) and
+1.16 at ring 0; 1.39 at ring 1 if spread excludes within-cell variance." The
+second number is the conservative one and the one the 2 Sep slides were built
+on, now regenerated. The median RMSE at ring 1 is 3.57 cm either way.
+
+Seq 00's ring-2 outlier (2.20) and ring 3 on 08, 09 and 10 are examined in §9.
+
+### As published 2 Sep — superseded
+
 Everything in this project was measured on 07 and 08 until 2 Sep, and the
 honest reason for those two is that they downloaded first. All eleven labelled
 sequences, 40 frames each, schedule 5/10/20/40, with the per-sequence pose
@@ -372,9 +417,16 @@ regenerating, and `block_stats` also feeds
 Every ρ moves in the direction that flatters us, which is the worst direction
 in which to ship a headline-metric change two days before submission.
 
-**Status: a diagnosed, deferred fix with a measured cost and a known likely
-benefit — recommended as a Day-7 post-submission item, not a permanent
-limitation.** Until it is done, the honest statement is that ring 0 is reported
+**Status: DONE 2026-09-17.** `ReferenceMap` stores the within-cell variance,
+`block_stats` adds it by the law of total variance, and the ρ guard counts
+returns rather than cells. Ring 0 ρ across all eleven: **1.16 [1.11–1.29]** —
+the prediction above held. Every cached M\* `.npz` is refused by `load()` until
+rebuilt. The roughness bit in `plan_regret.costmap_from_reference` keeps the
+between-cell variance only; including the within-cell term there took seq 08's
+R(S) from 0.127 to 2.497 because the map side has no such term. The earlier
+status follows for the record: **a diagnosed, deferred fix with a measured
+cost and a known likely benefit — recommended as a Day-7 post-submission
+item, not a permanent limitation.** Until it is done, the honest statement is that ring 0 is reported
 on RMSE alone and carries no coarsening ratio, and that this is the metric's
 construction rather than the sensor's reach.
 
@@ -775,7 +827,7 @@ sequence's sign should track its roughness contrast across each ring's inner
 boundary, not a constant.** That is falsifiable and is the thing to check when
 07/08 land.
 
-**⚑ Open, and it touches §2b's headline.** ρ = 1.45 median (ring 1, n = 11) is
+**⚑ Resolved 2026-09-17 — §2b is regenerated.** *(Original note:)* ρ = 1.45 median (ring 1, n = 11) is
 the claim we lead with. This fix changes the scored population, and on the
 synthetic sequence ρ moves by up to **0.06 per ring**. **§2b's table should be
 regenerated with this fix before ρ is quoted to two decimals.** The finding
@@ -793,6 +845,224 @@ for a number we want near 1. `coarsening_ratio_per_ring` already drops
 sixty-four. Disclosed rather than corrected, and coverage is now a `cov` column
 printed next to ρ so the two cannot be read apart. This compounds §2b's "ring 0
 has no ρ on any sequence" — between them, ρ is best evidenced at ring 1.
+
+---
+
+## 8. A coarse cell could share its footprint with a finer one — FIXED 2026-09-17 (open item D2 / R3)
+
+*Shrestha, in Aakash's lane while he was away. `src/grid/lattice.py`,
+`src/gpu/cuda_kernels.py`, and every caller of `bin_points` / `ring_of`.*
+
+### What the defect was
+
+Ring membership was decided per POINT: each return's own `d_aniso` against
+`R_L`. The ring boundary is a real number and a cell is a block on the lattice,
+so the boundary fell strictly inside blocks, and two returns in one 40 cm cell
+could be filed into 5 cm and 40 cm. The 40 cm cell's footprint then contained
+an occupied 5 cm cell — the §2.2 partition property that `block_stats`,
+`_compared` and `query()` all assume, broken.
+
+The 12 Sep design note framed this as an anisotropy problem (`a_f(v)` puts the
+boundary off the lattice). **On real data it was worse than that, and live at
+v = 0**, because the engine decided the ring from `points_sensor` — rotated
+with the vehicle's heading — while the ring buffers are world-aligned squares.
+Measured on seq 08, 30 frames, the engine's own binning:
+
+| | before | after |
+|---|---|---|
+| frames with a coarse cell containing a finer occupied cell | 30 / 30 | 0 / 30 |
+| coarse cells affected | 0.108% | 0 |
+| returns dropped: ring chosen, then outside that ring's window | **0.224%** (~277 / frame) | 0 |
+
+The dropped returns are the corners of the rotated square: a point at sensor
+(9.9, 9.9) with the car facing 45° is ring 0 by Chebyshev distance and is at
+world offset (0, 14) — outside ring 0's window, so `bin_points` returned -1.
+
+### The fix
+
+Per BLOCK, coarse to fine (`ring_of`'s docstring has the proof): start in the
+coarsest ring if its window holds the point; a ring-L block splits into ring
+L-1 only if every child lies in ring L-1's window **and** eq. (20) at the
+block's nearest point is below R_{L-1} (or the rear floor forces it). Every
+decision is a function of the block alone, so all points of a block stop at
+the same level — no footprint can contain another and there is no gap.
+Containment is an integer test against the real windows, so it cannot drop a
+return a coarser ring has room for.
+
+The design note's part B, snapping the boundary to the coarser lattice, is not
+used: under a heading the boundary is not axis-aligned, and the per-block rule
+makes the partition hold without it.
+
+`bin_points` now takes world points plus the vehicle position and heading
+(`MapEngine` reads the heading off the pose). `GridMap` gained
+`vehicle_yaw_rad` (default 0.0, which is what the eval harness has always
+assumed), and `query()`, `metrics._ring_cells` and `gate` pass the windows so
+routing, scoring and binning use one rule.
+
+### Proof, and cost
+
+- `test_no_cell_footprint_contains_another_under_foveation` (CI-blocking):
+  both schedules, every block within 0.6 m of an inner boundary, at speeds
+  solved from the schedule so a stretched boundary lands ±1e-7 m either side
+  of a lattice line, and at five vehicle positions / headings. **It fails on
+  the old rule** at 20 of 28 speeds (5/10/20/40) and 10 of 20 (5/10/50), with
+  the vehicle at the origin facing +x.
+- `test_every_return_inside_the_map_is_binned` (CI-blocking).
+- CPU and GPU paths: identical on 200/200 frames of seq 08. Final hash
+  `4e180a12…`, was `4313df1a…`.
+- `bin` p50: cpu 6.77 → 10.27 ms, cuda 0.18 → 0.35 ms. Whole frame on cuda
+  unchanged at 22.26 / 26.74 ms. Bin scratch 50 → 84 B per point (12.6 MB at
+  the 150,000-point cap) — declared at startup, outside the cell budget. **No
+  memory figure on a slide moves**: rings are still preallocated at their
+  fixed half-widths.
+
+### What it does to the accuracy numbers — 40 frames, 5/10/20/40
+
+`python scripts/eval_synthetic.py --seq 07 --frames 40` (and 08), `main` @
+`6af6907` against the final state of 17 Sep (per-block rule, heading set in the
+harness as in the engine). RMSE only — ρ's `spread` definition also changed
+today (§2b), so ρ is not comparable across this table; RMSE is.
+
+| | r0 RMSE | r1 RMSE | r2 RMSE | r3 RMSE | R(S), common support |
+|---|---|---|---|---|---|
+| 07 before | 1.77 | 3.04 | 5.91 | 16.93 | 1.420 |
+| 07 after | 1.77 | **2.83** | 5.99 | **13.64** | **1.313** |
+| 08 before | 1.17 | 2.31 | 4.89 | 54.86 | 0.171 |
+| 08 after | 1.17 | 2.31 | **4.02** | 54.80 | **0.127** |
+
+More cells are scored on every ring (07 ring 1: 42,227 → 46,084). 07 moves
+more than 08 because its heading is further from an axis, which is exactly
+where the rotated-frame rule and the world-aligned windows disagreed.
+
+⚑ A diagnostic run at an intermediate state (heading not yet set in the
+  harness) read 07's *unrestricted* regret 5.020 with the representative path
+  30% unknown. That line measures fill rate, as the script says; at the final
+  state it reads 1.960 / 7%, and the planning window's unknown share fell from
+  7.6% to 5.8% with the fix. Recorded so the number is not rediscovered as a
+  regression.
+
+
+
+---
+
+## 9. §9.2 against only what each ring received — DONE 2026-09-17
+
+*Aakash's 2 Sep handover item: "each ring is scored against a reference
+containing observations that ring never received … a metric comparing each
+ring against a reference restricted to what that ring actually observed would
+isolate coarsening properly." Done by Shrestha while Aakash was away.*
+
+`reference_map.RingObservations` builds, per ring, a sparse M\* from exactly the
+static ground returns that ring integrated — attributed during
+`harness.run_sequence` with `lattice.ring_of_into`, the function `bin_points`
+bins with, so no return can be credited to a ring that did not receive it
+(`test_ring_observations_credit_each_return_to_the_ring_that_binned_it`). It
+answers `block_stats` like M\*, so every §9 metric takes it unchanged.
+`eval_synthetic.py` prints it under each per-ring table as `vs M*|ring`.
+
+The synthetic one-off in `metrics.py`'s docstring put this at ≤ 0.05 cm and
+said the direction on real data was **unknown**. On real data it is not small.
+All eleven sequences, 40 frames, 5/10/20/40:
+
+| seq | r0 ρ | r1 RMSE | r1 ρ | r2 RMSE | r2 ρ | r3 RMSE | r3 ρ |
+|---|---|---|---|---|---|---|---|
+| 00 | 1.06 | 3.38 | 1.10 | 1.54 | 1.02 | 1.60 | 1.01 |
+| 01 | 1.05 | 0.79 | 1.08 | 0.96 | 1.04 | 5.85 | 1.13 |
+| 02 | 1.06 | 1.02 | 1.05 | 3.34 | 1.02 | 1.68 | 1.01 |
+| 03 | 1.06 | 5.51 | 1.10 | 3.53 | 1.03 | 2.83 | 1.03 |
+| 04 | 1.05 | 2.17 | 1.08 | 3.59 | 1.03 | 6.52 | 1.04 |
+| 05 | 1.10 | 0.91 | 1.06 | 2.42 | 1.04 | 3.49 | 1.02 |
+| 06 | 1.06 | 1.36 | 1.07 | 3.29 | 1.05 | 2.52 | 1.01 |
+| 07 | 1.08 | 1.92 | 1.07 | 3.02 | 1.04 | 5.01 | 1.03 |
+| 08 | 1.12 | 1.28 | 1.06 | 2.62 | 1.04 | 54.76 | 1.84 |
+| 09 | 1.07 | 1.77 | 1.10 | 1.09 | 1.02 | 21.12 | 1.61 |
+| 10 | 1.05 | 2.93 | 1.13 | 1.64 | 1.02 | 10.34 | 1.80 |
+
+```
+M*|ring   ring 0 rho 1.06 [1.05-1.12]
+          ring 1 rho 1.08 [1.05-1.13]   RMSE 1.77 cm [0.79-5.51]   (vs M*: 3.57 [2.09-12.60])
+          ring 2 rho 1.03 [1.02-1.05]   RMSE 2.62 cm [0.96-3.59]   (vs M*: 9.22 [3.83-33.54])
+          ring 3 rho 1.03 [1.01-1.84]   RMSE 5.01 cm [1.60-54.76]  (vs M*: 13.64 [7.58-54.80])
+```
+
+### How to read it — and how not to
+
+⚑ **ρ ≈ 1.03–1.08 is NOT a better headline, and must not be quoted as one.**
+  When the cell and the reference average the same returns, the only thing
+  left between them is the fusion itself — Kalman weighting against an
+  unweighted mean, and 1 cm storage — so ρ near 1 is close to guaranteed. What
+  this table measures is that **the map integrates what each ring receives
+  faithfully**: 3–8% over the terrain's own spread. The §2b table remains the
+  headline, because the map is used to answer for ground as the reference
+  knows it.
+
+**What the difference between the two tables is.** Everything §2b's ρ carries
+above this table's is the ring's returns disagreeing with *other* returns of
+the same ground — fired from another range, another frame, another ring. Ring
+2's median RMSE is 9.22 cm against M\* and 2.62 cm against M\*|ring: about 70%
+of ring 2's error on the median sequence is that disagreement, not the
+coarsening of 20 cm cells. That is a statement about range-dependent
+observation error (pose drift over the frames between the looks, beam
+divergence, grazing incidence), and it is the error budget to attack next.
+
+**Sequence 00's ring-2 outlier — narrowed, not closed.** §2b's ρ 2.20 (2.32 on
+2 Sep) becomes **1.02** against M\*|ring, RMSE 33.54 → 1.54 cm. So the outlier
+is not coarsening and not fusion: the 20–50 m returns ring 2 integrated
+disagree by ~33 cm RMS with the returns of the same ground from other ranges.
+00's systematic pose bias was already fixed (§6); what remains is dispersion
+across looks. **Cause still open** — range-dependent registration on a long
+urban loop is the leading hypothesis.
+
+**Ring 3 on 08, 09 and 10 — a NEW open item.** ρ 1.84 / 1.64 / 1.82 against
+M\*, and **unchanged** against M\*|ring (1.84 / 1.61 / 1.80, RMSE 54.76 / 21.12
+/ 10.34 cm). Here the map disagrees with *the very returns it integrated*, so
+the cause is inside the map, not in the reference. 08 is the sequence with
+45.7 m of climb (§6) and ring 3 is where the 8 m band's datum shifts land;
+§10.4's cleanup at 50–100 m is the other candidate. Not investigated.
+
+---
+
+## 10. The money plot's non-monotone steps — mostly noise, two are real
+
+*Aakash's 2 Sep open number: "the money plot's remaining non-monotone step,
+which survives both the extent fix and 64-query averaging".*
+
+`eval_synthetic.py` now prints R(S) ± SE per schedule and every adjacent step
+**paired over the same 64 planning queries** — the schedules are planned on
+identical start/goal pairs, so the per-query difference cancels how hard each
+query is, which the unpaired SEs do not. All eleven sequences, 40 frames:
+
+| seq | 5/10/20/40 | 5/10/50 | uniform 10 cm | 20 cm | 40 cm | 80 cm |
+|---|---|---|---|---|---|---|
+| 00 | 0.054 ± 0.022 | 0.054 ± 0.022 | 0.037 ± 0.018 | 0.037 ± 0.018 | 0.076 ± 0.032 | 0.037 ± 0.018 |
+| 01 | 0.074 ± 0.028 | 0.074 ± 0.028 | 0.089 ± 0.030 | 0.089 ± 0.030 | 0.054 ± 0.019 | 0.531 ± 0.042 |
+| 02 | 0.138 ± 0.063 | 0.138 ± 0.063 | 0.088 ± 0.029 | 0.088 ± 0.029 | 0.113 ± 0.033 | 0.088 ± 0.029 |
+| 03 | 1.287 ± 0.122 | 1.181 ± 0.115 | 1.240 ± 0.129 | 1.245 ± 0.129 | 1.312 ± 0.128 | 1.438 ± 0.129 |
+| 04 | 0.012 ± 0.008 | 0.012 ± 0.008 | 0.014 ± 0.007 | 0.026 ± 0.010 | 0.026 ± 0.010 | 0.055 ± 0.021 |
+| 05 | 0.022 ± 0.012 | 0.022 ± 0.012 | 0.047 ± 0.038 | 0.026 ± 0.018 | 0.069 ± 0.031 | 0.132 ± 0.044 |
+| 06 | 0.582 ± 0.143 | 0.582 ± 0.143 | 0.468 ± 0.102 | 0.469 ± 0.091 | 0.419 ± 0.076 | 0.560 ± 0.083 |
+| 07 | 1.313 ± 0.182 | 1.313 ± 0.182 | 1.519 ± 0.180 | 2.237 ± 0.226 | 1.667 ± 0.200 | 2.338 ± 0.242 |
+| 08 | 0.127 ± 0.034 | 0.127 ± 0.034 | 0.073 ± 0.028 | 0.106 ± 0.033 | 0.124 ± 0.057 | 0.077 ± 0.018 |
+| 09 | 0.004 ± 0.004 | 0.004 ± 0.004 | 0.105 ± 0.035 | 0.105 ± 0.035 | 0.013 ± 0.007 | 0.150 ± 0.031 |
+| 10 | 1.315 ± 0.175 | 1.480 ± 0.194 | 1.172 ± 0.131 | 1.655 ± 0.396 | 2.441 ± 0.338 | 1.732 ± 0.315 |
+
+**14 of 55 paired steps are at |z| ≥ 2.** What they say:
+
+- **Seq 08 — the case the handover named — is noise.** Every step, paired,
+  is within 1.6 SE. No explanation is owed.
+- **Coarsest-uniform cost is real and consistent:** 40 → 80 cm raises R(S)
+  at ≥ 2 SE on 01, 03, 04, 05, 07, 09 and 10 (01: +0.477, 11.5 SE).
+- **Two non-monotone steps are REAL, and new open items.** Seq 07: uniform
+  20 cm is worse than both 10 cm (+0.718, 8.5 SE) and 40 cm (−0.650, 7.9 SE).
+  Seq 09: 40 cm beats 20 cm (−0.092, 2.6 SE). Something about 20 cm cells on
+  those two sequences — a §7.1 step/slope threshold landing between cell
+  sizes is the first thing to check. Not investigated.
+- **Foveated vs uniform 10 cm:** indistinguishable on 9 of 11. Better on 07
+  (uniform 10 cm worse by +0.214, 5.2 SE), worse on 06 (−0.278, 2.1 SE).
+- 5/10/20/40 and 5/10/50 are identical on 9 sequences because the planning
+  window lies inside the rings the two schedules share.
+- Seq 10's uniform 20–80 cm steps pair only 3 queries (most are blocked on one
+  side); read them as unmeasured.
 
 ---
 

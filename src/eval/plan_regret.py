@@ -379,7 +379,10 @@ def costmap_from_reference(reference, x0_m, y0_m, nx, ny, cell_m=None,
             + np.arange(ny)[None, :] * k)
     i_lo, j_lo = np.broadcast_arrays(i_lo, j_lo)
 
-    n, mean, var = reference.block_stats(i_lo, j_lo, k)
+    # Between-cell variance only: the within-cell term is sensor noise as much
+    # as terrain, and the map side of the comparison has no such term (see
+    # `ReferenceMap.block_stats`).
+    n, mean, var = reference.block_stats(i_lo, j_lo, k, within_cell=False)
     unknown = n == 0
     z = np.where(unknown, np.nan, mean / 100.0)      # cm -> m
 

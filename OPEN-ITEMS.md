@@ -15,7 +15,7 @@ something external or someone else.
 | # | item | why it needs you | file |
 |---|---|---|---|
 | **D1** | **The Patchwork++ singleton lifetime.** Does `segment_ground` take an estimator? Does the module expose a reset? Who owns the lifetime? | Design decision with three real options, none obviously right. **Highest-impact item on this list** — see §2. | `reports/ring1-reproduction-investigation.md` §7 |
-| **D2** | **R3 — ring boundary under anisotropy.** Nearest-corner test + boundary snapping. | Touches `src/grid/lattice.py` (Aakash's) and has a cross-lane consequence in `metrics._ring_cells`. Needs his call, not mine. | `pending-review/r3-ring-boundary-under-anisotropy.md` |
+| ~~**D2**~~ | ~~**R3 — ring boundary under anisotropy.**~~ **Closed 2026-09-17** — see §4. | | `pending-review/r3-ring-boundary-under-anisotropy.md` |
 | **D3** | **R5 — sticky safety-critical class bit.** Which classes (5/6/7 only, or also 1/2)? Which of three decay designs? What is N, and it must live in frozen `configs/thresholds.yaml`? Does it affect traversability, and on which commit? | Five open sub-decisions, listed in the file. Also touches frozen `include/vrgrid/cell.py` — three-way sign-off. | `pending-review/r5-sticky-safety-critical-class-bit.md` §6 |
 | **D4** | **R7 README wording** — which of three drafted lengths, and where it goes. | You said you would place it yourself. | `pending-review/r7-readme-counts-draft.md` |
 | **D5** | **`alpha_m2` — raise it or leave it at 0.** | Not a calibration task: 0 is the only value consistent with sih-math §5.3 and the §5.4 unit test, so raising it means restating both in the same commit. | `reports/r11-what-this-does-not-do.md` §4 |
@@ -72,6 +72,23 @@ estimators making one pass each agree exactly, 0 of 1.48 M points differing.
 | Ring-1 reproduction mismatch (seq 07) | **ROOT-CAUSED** — the singleton. Seq 08 immune; seq 00 open (R-f). | `870766c` |
 | Build provenance (native build vs wheel) | **Closed as a documented unknown** on your call — needs a multi-GB toolchain. | — |
 | R11 limits page | **DONE.** | `e4bd731` |
+| Ring 0 has no ρ (`known-limitations` §2b) | **FIXED 2026-09-17.** Within-cell variance in `spread`; ring 0 ρ 1.16 [1.11–1.29], n = 11. Roughness in the regret costmap keeps between-cell variance only. | — |
+| §9.2 per-ring reference restricted to what each ring received (Aakash handover 2 Sep) | **DONE 2026-09-17.** `RingObservations`; `known-limitations` §9. | — |
+| §2b eleven-sequence table stale | **REGENERATED 2026-09-17.** Ring 1 ρ 1.39 [1.22–1.53] (was 1.45 [1.26–1.59]); deck docs updated. | — |
+| Money plot non-monotone step (Aakash handover 2 Sep) | **RESOLVED 2026-09-17** for seq 08 — paired over the same queries it is noise. Two real steps found elsewhere, see §5b. | — |
+| `python -m vrgrid.dash` CPU-only; stale GPU note in `dashboard/gpu_stats.py` | **FIXED 2026-09-17.** `--device cuda`. | — |
+| **D2 / R3** ring boundary under anisotropy | **FIXED 2026-09-17** (Shrestha, Aakash away). Ring membership decided per world-lattice block, coarse to fine; partition now CI-tested at adversarial speeds and headings. The defect was live at v = 0 on real seq 08 (nesting every frame, 0.224% of returns dropped); both 0 after. Snapping (part B) not used — see the status block in the file. | see `git log -- src/grid/lattice.py` |
+
+---
+
+## 5b. New open items, 2026-09-17 — found while closing Aakash's list
+
+| # | item | notes |
+|---|---|---|
+| **N-1** | **Ring 3 on 08 / 09 / 10**: ρ 1.84 / 1.64 / 1.82, and **unchanged against the ring's own returns**. | The disagreement is inside the map, not the reference. 08's 45.7 m climb vs the 8 m band, and §10.4 at 50–100 m, are the candidates. `known-limitations` §9. |
+| **N-2** | **Seq 07 uniform 20 cm regret spike** (+0.72 vs 10 cm, −0.65 vs 40 cm, ~8 SE paired) and **seq 09** 40 cm < 20 cm (2.6 SE). | Real, not query noise. A §7.1 threshold landing between cell sizes is the first check. `known-limitations` §10. |
+| **N-3** | **Seq 00 ring 2**: ρ 2.20 → 1.02 against its own returns. | Cross-look disagreement at 20–50 m, not coarsening. Cause open. `known-limitations` §9. |
+| **N-4** | GitHub #6 ("dashboard/ has been removed") is stale since PR #7 brought Rerun back. | Shrestha's own issue; close it when convenient. |
 
 ---
 

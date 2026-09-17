@@ -460,3 +460,23 @@ Driving the shipping code with one `Timer` shared across both halves, 200 frames
 **Source:** `scripts/frnet_fast_scatter.py` (self-verifying: `python scripts/frnet_fast_scatter.py` prints the equivalence check and the benchmark), `scripts/frnet_finetune.py --fast-scatter`, `scripts/frnet_eval.py [--fast-scatter]`. 650 passed, 2 skipped; `ruff check .` clean; both CI-blocking tests pass.
 
 **So what:** The DL half is now a defensible position rather than an anecdote — three recipes measured on a held-out sequence, all reported, the pretrained checkpoint retained on evidence. Two numbers on slides need changing before anyone else reads them off: **65.2% mIoU, not 69.8%**, and the latency claim needs to say whether it is quoting the back half or the frame. The end-to-end p99 is the one that is genuinely uncomfortable, and it is uncomfortable by 0.43 ms — worth knowing before a judge asks rather than after.
+
+## 2026-09-17 — Shrestha (Aakash's lane, while he was away)
+
+**Module:** D1 — lattice (§2, §6) and evaluation (§9)
+
+**What happened:** Closed the open items in Aakash's lane: D2 / R3 (ring boundary), ring 0's missing ρ, §9.2 against a per-ring reference, the stale eleven-sequence table, and the money plot's non-monotone step. Full write-ups are `known-limitations.md` §§2b, 8, 9, 10 and `docs/handover-2026-09-17-aakash.md`.
+
+**⚑ 1. D2 was live at v = 0 on real data, not only under anisotropy.** The engine chose each return's ring from `points_sensor`, which rotates with the heading, against world-aligned ring windows. Seq 08, 30 frames: a coarse cell contained a finer occupied cell on every frame (0.108% of coarse cells), and 0.224% of returns were dropped because their ring's window did not hold them. The rule is now per world-lattice block, coarse to fine. Both figures are 0, CPU and GPU are identical on 200/200 frames, and the new CI-blocking partition test fails on the old rule at 20 of 28 speeds.
+
+**⚑ 2. Ring 0 has a ρ: 1.16 [1.11–1.29], n = 11.** Spread now includes the within-cell variance. Ring 1 moves 1.39 → 1.25, the flattering direction, so both are published. The same term in the regret costmap's roughness bit took seq 08's R(S) from 0.127 to 2.497. It is sensor noise the map side cannot see, so roughness keeps the between-cell variance.
+
+**⚑ 3. Against only the returns each ring received, ρ is 1.03–1.08, and that is NOT a headline.** It shows the fusion is faithful. The gap to the M\* table is cross-look disagreement: ring 2's median RMSE is 9.22 cm against M\* and 2.62 cm against its own returns. Seq 00's ring-2 outlier (2.20) is entirely that (1.02). Ring 3 on 08/09/10 does not move at all, so its error is inside the map (new open item N-1).
+
+**⚑ 4. The money plot, paired over the same 64 queries.** Seq 08's step is noise, with every step under 1.6 SE. Seq 07's uniform 20 cm is really worse than both neighbours (~8 SE) and seq 09's 40 cm really beats 20 cm (2.6 SE), which is new open item N-2. The 40 → 80 cm step costs regret at ≥ 2 SE on 7 of 11 sequences.
+
+**Also:** a bug of mine along the way. The packed 64-bit cell key overflowed the sign bit, and the tests passed because they compared one broken unpacking against another. It was caught by a debug print of index ranges before any number was recorded, and is pinned by `test_ring_observations_rebuild_m_star_exactly`.
+
+**Source:** `python scripts/eval_synthetic.py --seq <00..10> --frames 40`. `python scripts/gpu_parity.py --seq 08 --frames 200`. `python scripts/timing_table.py --seq 08 --frames 200 --device {cpu,cuda}`.
+
+**So what:** The partition theorem now holds on the real frame path, not only in the unit test's frame. The headline ρ is regenerated and quoted two ways. The accuracy budget has a new decomposition, which says the next centimetres are in cross-look registration, not in the schedule.

@@ -328,8 +328,9 @@ class Frame:
         x, y, cols = self.sweeps[i % len(self.sweeps)]
         np.add(x, i * self.per_frame_m, out=self.ego)   # untimed: JP's transform
         with ctx("bin"):
-            idx = bin_points(x, y, self.ego, y, self.sched, self.buffers,
-                             self.idx, self.bin_scratch)
+            idx = bin_points(self.ego, y, self.sched, self.buffers,
+                             self.idx, self.bin_scratch, 0.0,
+                             (i * self.per_frame_m, 0.0))
         with ctx("scatter"):
             agg = scatter_sorted(idx, **cols, scratch=h.scratch)
         with ctx("fuse"):

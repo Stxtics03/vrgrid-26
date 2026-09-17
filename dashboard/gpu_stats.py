@@ -5,10 +5,16 @@ discrete "NVIDIA GeForce RTX 4050 Laptop GPU" over the integrated Radeon (its
 debug log says so). This module reads what that GPU is doing, so the dashboard
 can show it, and nothing more.
 
-It does NOT measure the mapping pipeline. `src/gpu/` is NumPy on the CPU; a
-panel implying the map is computed on the GPU would be false, and the chart
-title says "at record time" for the same reason: a baked recording can only
-carry what the GPU was doing while it was being made.
+What the panel shows depends on how the pipeline was started. With the
+default `--device cpu` the map is computed in NumPy on the CPU, and the GPU is
+only rendering -- a panel implying otherwise would be false. With
+`--device cuda` (`python -m vrgrid.dash` or `python -m vrgrid.run`) perception
+and every map stage except Patchwork++ run on the card
+(`docs/gpu-lane/08-GPU-FRAME-LOOP.md`), and the utilisation and memory read
+here include that work. The reading is the whole card either way; it does not
+separate the pipeline from the renderer. The chart title says "at record time"
+because a baked recording can only carry what the GPU was doing while it was
+being made.
 
 `nvidia-smi` costs 75-270 ms a call (measured here), far too slow for a 100 ms
 frame, so a daemon thread polls it about once a second and the dashboard reads

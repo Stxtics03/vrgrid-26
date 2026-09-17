@@ -56,8 +56,10 @@ image (NaN-aware), inverse index, reflectivity bytes, semantic labels, motion
 flags, every counter, and the full-grid hash. Patchwork++ runs once and both
 paths get its mask; running it twice would compare D1, not the GPU.
 
-- **identical on 200 / 200 frames**, final map hash `4313df1a58e68f0ed69a6e5417db4000`.
-  That is the same hash the CPU engine produced in the 2026-09-16 run.
+- **identical on 200 / 200 frames**, final map hash `4e180a121d7b5aaac95df6a97fe2374b`.
+  (Before 2026-09-17 it was `4313df1a58e68f0ed69a6e5417db4000`. The change is the
+  per-block ring rule of open item D2 on BOTH paths -- 0.224% of returns that
+  used to be dropped are now binned -- and the two paths still agree.)
 - 7,609,197 cells cleared by §10.4 over the run, so the comparison exercises the cleanup
 - also identical with `--max-points 100000`, where the engine truncates each scan
 
@@ -98,6 +100,7 @@ produced a map that looked right and hashed differently.
 | ground (Patchwork++, host both) | 12.54 | 14.59 | 12.57 | 14.86 |
 | reflectivity | 3.53 | 4.98 | **0.02** | **0.04** |
 | bin | 6.77 | 9.82 | **0.18** | **0.23** |
+| bin, after D2 (2026-09-17) | 10.27 | 12.92 | **0.35** | **0.42** |
 | scatter | 7.08 | 10.86 | **1.47** | **2.02** |
 | fuse | 4.11 | 5.70 | **0.05** | **0.07** |
 | cleanup | 26.70 | 34.79 | **1.65** | **2.40** |
@@ -109,6 +112,11 @@ Stage rows on cuda synchronise the device at each boundary, so each row is
 real work and not a kernel launch. The free-running pass, with no per-stage
 synchronisation, gives 22.23 / 27.89 ms: the staged table is not flattering
 the device. On cuda, `shift` includes uploading the frame's ground mask.
+
+The `bin` row after D2 is the per-block ring rule: three levels of a coarse-to-fine
+descent per point instead of one comparison. Whole frame after it, same command:
+cpu 91.73 / 102.77 ms, cuda **22.26 / 26.74 ms** -- the device frame does not
+move, and the host frame still misses 10 Hz at p99 as it did before.
 
 **Patchwork++ is now 56% of the frame.** It is the only large stage left and
 it is a CPU library by project rule. Everything else in the frame totals under

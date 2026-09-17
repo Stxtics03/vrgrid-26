@@ -22,16 +22,18 @@ harness, and the moment one exists somebody will use it the night before the
 deadline.
 """
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
 from vrgrid.eval import metrics
-from vrgrid.eval.reference_map import ReferenceMap
+from vrgrid.eval.reference_map import ReferenceMap, RingObservations
 from vrgrid.gpu.allocators import allocate, bytes_allocated
 from vrgrid.gpu.kernels import CEILING_NONE
 from vrgrid.gpu.shift import RingBuffer, shift, track_datum
 from vrgrid.grid import gate, traversability
 from vrgrid.grid.fusion import fuse, initialise, scatter
+from vrgrid.grid.lattice import ring_of_into
 from vrgrid.grid.pool import RefinementPool
 from vrgrid.grid.query import GridMap
 from vrgrid.grid.schedule import load, load_thresholds
@@ -390,7 +392,8 @@ def final_vehicle_xy(sequence: str, max_frames=None) -> tuple:
 
 
 def run_sequence(gm: GridMap, scans, recentre: bool = True,
-                 tracks: TrackList | None = None) -> RunStats:
+                 tracks: TrackList | None = None,
+                 observed: RingObservations | None = None) -> RunStats:
     """Drive the map through a sequence. Returns what it did.
 
     `scans` yields (points in VEHICLE frame, RAW label ids, is_ground, T).
@@ -415,13 +418,19 @@ def run_sequence(gm: GridMap, scans, recentre: bool = True,
       learning map cannot be separated at all, and every car that ever drove
       past ends up welded into the elevation map. See grid/transient.py.
 
-    ⚑ Both frames are needed and they do different jobs -- see the note on
-      `fusion.scatter()`. The ring a point lands in is decided in the vehicle
-      frame, because foveation follows the vehicle; the CELL it lands in is
-      decided in the world frame, because cell identity is world-anchored and
-      that is the entire reason the toroidal shift exists. Scatter every frame
-      at the vehicle origin instead and the map still builds, still looks
-      plausible, and smears the whole sequence onto one patch of ground.
+    ⚑ The vehicle's position AND heading are needed, and they do different
+      jobs. Cells are world-anchored -- that is the entire reason the toroidal
+      shift exists -- so points are binned in the world frame. Which ring
+      answers for a place follows the vehicle (§6.1, per world-lattice block
+      since open item D2), so `recenter` records where the vehicle is and this
+      records which way it faces, read off the pose exactly as
+      `MapEngine` reads it. Scatter every frame at the vehicle origin instead
+      and the map still builds, still looks plausible, and smears the whole
+      sequence onto one patch of ground.
+
+    `observed`, when given, is filled with every static ground return and the
+    ring it was binned into, so §9.2 can also be scored against only what each
+    ring received (`reference_map.RingObservations`).
 
     The pose is applied here rather than in `scatter()` so there is one place
     that knows the frame convention. When `perception.transforms` lands this
@@ -460,6 +469,11 @@ def run_sequence(gm: GridMap, scans, recentre: bool = True,
         last_xy = xy
         if recentre:
             recenter(gm, *xy)
+            # The heading of the vehicle's x axis in the world. Only §6.2's
+            # forward/lateral/rear terms read it; `MapEngine._set_vehicle`
+            # takes it the same way, so the harness scores the ring layout the
+            # pipeline runs.
+            gm.vehicle_yaw_rad = math.atan2(float(pose[1, 0]), float(pose[0, 0]))
 
         # Dynamic returns never reach the persistent map. Before this existed,
         # one car 12 m ahead moved ring 1's RMSE from 0.48 cm to 11.71 cm.
@@ -516,6 +530,16 @@ def run_sequence(gm: GridMap, scans, recentre: bool = True,
         #   RANGE that `scatter` computes from the same array for the
         #   measurement-variance weighting. Height and geometry come from
         #   different frames here and each is now named.
+        if observed is not None:
+            # Attributed with the frame path's own ring rule, on the same
+            # world points `scatter` bins, so no return can be credited to a
+            # ring that did not receive it.
+            wg = world[static & np.asarray(ground, dtype=bool)]
+            scratch, out = gm.bin_scratch(wg.shape[0])
+            observed.add(ring_of_into(wg[:, 0], wg[:, 1], gm.schedule, gm.speed_ms,
+                                      out[:wg.shape[0]], scratch, gm.buffers,
+                                      gm.vehicle_xy_m, gm.vehicle_yaw_rad).copy(), wg)
+
         agg = scatter(gm, pts[static], learning_ids(np.asarray(labels)[static]),
                       np.asarray(ground, dtype=bool)[static],
                       points_world_m=world[static],

@@ -8,6 +8,7 @@ days before submission the framework must still run and still produce numbers.
     python -m vrgrid.dash --seq 00 --color-by ground --frames 60
     python -m vrgrid.dash --seq 07 --start-frame 660 --frames 30 --save shot.rrd
     python -m vrgrid.dash --seq 00 --save run.rrd      headless -> open with `rerun run.rrd`
+    python -m vrgrid.dash --seq 08 --device cuda       the pipeline on the GPU
 
 Shows: the point cloud coloured by the chosen layer, ring boundaries and the
 blind cone tracking the vehicle, and the vehicle pose per frame on the timeline.
@@ -43,6 +44,10 @@ def main(argv=None) -> None:
     p.add_argument("--no-map", action="store_true",
                    help="perception only; skip the map back end and its occupied-cell surface")
     p.add_argument("--no-patchworkpp", action="store_true")
+    p.add_argument("--device", default="cpu", choices=["cpu", "cuda"],
+                   help="run perception and the map on the GPU "
+                        "(`python -m vrgrid.run --device`); the map is "
+                        "bit-identical to cpu, so the dashboard draws the same thing")
     p.add_argument("--features", action="store_true",
                    help="draw the curb/pothole (math 7.4) and confidence (7.5) "
                         "layers. Recomputed every 20 frames and once at the end, "
@@ -63,15 +68,20 @@ def main(argv=None) -> None:
     from .pipeline_view import PipelineView
 
     sched = schedule_mod.load(args.schedule)
-    engine = None if args.no_map else MapEngine(sched, ghost_removal=not args.show_ghosts)
+    engine = None if args.no_map else MapEngine(sched, ghost_removal=not args.show_ghosts,
+                                                device=args.device)
     view = PipelineView(sched, spawn=args.save is None, save_path=args.save,
                         color_by=args.color_by, ghost_removal=not args.show_ghosts,
                         palette=args.palette, engine=engine, features=args.features)
     n = 0
     ground_method = None
     t_pull = time.perf_counter()
+    # Device perception yields frames whose outputs stay on the card, which
+    # only a device engine can consume; --no-map has no engine, so it keeps
+    # host perception and --device then has nothing to run.
+    perception_device = "cpu" if engine is None else args.device
     for frame in iter_pipeline(args.seq, args.frames, use_patchworkpp=not args.no_patchworkpp,
-                               start_frame=args.start_frame):
+                               start_frame=args.start_frame, device=perception_device):
         t_frame = time.perf_counter()          # the pull above was perception
         ground_method = frame.ground_method
         counters = engine.step(frame) if engine is not None else None

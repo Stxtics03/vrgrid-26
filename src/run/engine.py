@@ -30,6 +30,7 @@ what the "off" half of the Gate 3 demo is supposed to show.
 Everything is preallocated in `__init__`. The frame loop allocates nothing.
 """
 
+import math
 from contextlib import nullcontext
 from dataclasses import dataclass
 
@@ -191,6 +192,7 @@ class MapEngine:
         cap = self.max_candidates
         self._cand = {n: np.zeros(cap, np.float64) for n in "xyz"}
         self._cand_slots = np.zeros(cap, np.int64)
+        self._vehicle_xy, self._yaw = (0.0, 0.0), 0.0
         self._has_return = np.zeros(cap, np.bool_)
 
         # The card. Built from the host allocation above, so the device grid
@@ -205,20 +207,35 @@ class MapEngine:
 
     # -- binning ------------------------------------------------------------
 
-    def bin(self, xs, ys, xw, yw):
-        """Points -> flat slots.
+    def bin(self, xw, yw, vehicle_xy_m=None, yaw_rad=None):
+        """World points -> flat slots.
 
-        **Two frames, and mixing them is the whole difficulty.** Ring
-        MEMBERSHIP is a question about distance from the sensor, so `ring_of`
-        takes the sensor/vehicle-frame point (§6.1). The lattice INDEX is
-        global -- the map does not move when the vehicle does -- so `i_ring`
-        takes the world-frame one (§2.1). Feed world coordinates to `ring_of`
-        and every point reads as OUTSIDE once the vehicle has driven past the
-        last ring's half-width; feed vehicle coordinates to `i_ring` and the
-        map slides along under the vehicle. Both look right for a few seconds.
+        Ring membership is decided per world-lattice block against the ring
+        windows (`lattice.ring_of`, open item D2), so the points go in once, in
+        the world frame, and the vehicle comes in as its position and heading.
+        Both default to the vehicle as of the last `step()` -- the windows are
+        the ones that step shifted, so binning against anything else would
+        name slots the map never wrote.
         """
-        return bin_points(xs, ys, xw, yw, self.sched, self.buffers,
-                          self.idx, self.bin_scratch)
+        if vehicle_xy_m is None:
+            vehicle_xy_m = self._vehicle_xy
+        if yaw_rad is None:
+            yaw_rad = self._yaw
+        return bin_points(xw, yw, self.sched, self.buffers, self.idx,
+                          self.bin_scratch, 0.0, vehicle_xy_m, yaw_rad)
+
+    def _set_vehicle(self, frame, ego):
+        """Vehicle position and heading for this frame's ring decision.
+
+        Heading is the yaw of the sensor's x axis in the world, read off the
+        pose rotation. It only says which way is forward for §6.2 -- the rings
+        themselves are world-aligned windows -- so a frame with no pose (the
+        synthetic scenes) faces +x, which is what they were built for.
+        """
+        self._vehicle_xy = (float(ego[0]), float(ego[1]))
+        pose = getattr(frame, "pose", None)
+        self._yaw = (0.0 if pose is None
+                     else math.atan2(float(pose[1][0]), float(pose[0][0])))
 
     # -- the inverse, for the cleanup ---------------------------------------
 
@@ -303,7 +320,8 @@ class MapEngine:
             self._track_vehicle(ego[:2])
             self._track_datum(ego[2])
         with stage("bin"):
-            idx = self.bin(xs, ys, world[:, 0], world[:, 1])
+            self._set_vehicle(frame, ego)
+            idx = self.bin(world[:, 0], world[:, 1])
 
         semantic = np.asarray(frame.semantic)[:n]
         cls = np.where(semantic < 0, 0, semantic).astype(np.uint8)
@@ -376,7 +394,8 @@ class MapEngine:
             self._track_vehicle(ego[:2])
             self._track_datum(ego[2])
         with stage("bin"):
-            idx = gpu.bin(d, n, self.buffers)
+            self._set_vehicle(frame, ego)
+            idx = gpu.bin(d, n, self.buffers, self._vehicle_xy, self._yaw)
         with stage("scatter"):
             aggregate = gpu.scatter(d, n, idx, self.z_datum)
         with stage("fuse"):

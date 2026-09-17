@@ -230,7 +230,9 @@ def apply(gm, slots, vehicle_speed_ms: float = 0.0, thresholds=None,
 
     released = pool.release_overtaken(
         lambda ring, slot: migrate_ring(*_cell_centre(gm, ring, slot),
-                                        gm.schedule, ring, vehicle_speed_ms))
+                                        gm.schedule, ring, vehicle_speed_ms,
+                                        gm.vehicle_xy_m, gm.vehicle_yaw_rad,
+                                        gm.buffers))
 
     slots = np.asarray(slots, dtype=np.int64)
     fires = candidates(gm, slots, th)

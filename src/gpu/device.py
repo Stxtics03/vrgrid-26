@@ -327,7 +327,7 @@ class DeviceMap:
 
     def __init__(self, engine):
         import cupy
-        from vrgrid.grid.lattice import REAR_FLOOR_RANGE_M, stretch_factors
+        from vrgrid.grid.lattice import REAR_FLOOR_RANGE_M
 
         self.cp = cupy
         self.pool = cupy.get_default_memory_pool()
@@ -347,13 +347,14 @@ class DeviceMap:
         bs = engine.bin_scratch
         self.radii = cupy.asarray(bs["radii"])
         self.n_rings = len(sched.rings)
-        self.stretch = stretch_factors(sched, 0.0)
+        self.sched = sched
         self.floor_ring = -1 if bs["floor_ring"] is None else int(bs["floor_ring"])
         self.rear_floor_m = REAR_FLOOR_RANGE_M
         self.base_cell_m = sched.base_cell_m
         self.tab_host = np.zeros(7 * self.n_rings, np.int64)
         self.tab_host[:self.n_rings] = bs["t_k"]
         self.tab = cupy.zeros(7 * self.n_rings, np.int64)
+        self.per = cupy.zeros(3 * self.n_rings, np.float64)
 
         # payload constants, evaluated by the same Python expressions the host
         # functions evaluate, so the kernel multiplies by the same doubles
@@ -458,7 +459,12 @@ class DeviceMap:
 
     # -- bin, payload, scatter, fuse -------------------------------------------
 
-    def bin(self, d, n, buffers):
+    def bin(self, d, n, buffers, vehicle_xy_m=(0.0, 0.0), yaw_rad=0.0):
+        """`lattice.bin_points` on the card. The per-frame constants come from
+        the host function that builds them for `ring_of_into`, so both sides
+        compare the same doubles."""
+        from vrgrid.grid.lattice import _descent_constants
+
         t = self.tab_host
         R = self.n_rings
         for L, buf in enumerate(buffers):
@@ -466,11 +472,13 @@ class DeviceMap:
             t[R + L], t[2 * R + L], t[3 * R + L] = W, buf.x0, buf.y0
             t[4 * R + L], t[5 * R + L], t[6 * R + L] = buf.offset, buf.x0 % W, buf.y0 % W
         self.tab.set(t)
-        a_f, a_s, a_r = self.stretch
+        a_f, a_s, a_r, cy, sy, per = _descent_constants(
+            self.sched, t[:R].tolist(), 0.0, vehicle_xy_m, yaw_rad)
+        self.per.set(np.array(per, np.float64).reshape(-1))
         idx = self.idx[:n]
-        K.bin_points(d["dtype"])(d["pts"], d["ncols"], d["world"], self.radii, R,
-                                 a_f, a_s, a_r, self.floor_ring, self.rear_floor_m,
-                                 self.base_cell_m, self.tab, idx)
+        K.bin_points()(d["world"], self.radii, R, a_f, a_s, a_r, self.floor_ring,
+                       self.rear_floor_m, self.base_cell_m, cy, sy, self.per,
+                       self.tab, idx)
         return idx
 
     def scatter(self, d, n, idx, z_datum) -> CellAggregate:

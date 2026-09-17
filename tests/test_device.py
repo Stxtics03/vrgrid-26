@@ -109,11 +109,16 @@ def test_device_bin_matches_bin_points():
     for buf in eng.buffers:           # a shifted window, not the origin one
         buf.x0 += 7
         buf.y0 -= 3
-    host = eng.bin(pts[:, 0], pts[:, 1], world[:, 0], world[:, 1]).copy()
     d = {"pts": cp.asarray(pts.reshape(-1)), "ncols": 4, "dtype": np.float32,
          "world": cp.asarray(world.reshape(-1))}
-    assert np.array_equal(eng.gpu.bin(d, n, eng.buffers).get(), host)
-    assert (host >= 0).sum() > n // 4 and (host < 0).sum() > 0
+    # headings chosen to break every symmetry the block bound has: facing
+    # +x, the diagonal, backwards, and an angle with no special value
+    for vehicle, yaw in [((0.3175, -0.2125), 0.0), ((0.35, 0.4), 0.7853981633974483),
+                         ((-1.1, 2.05), 3.141592653589793), ((0.0, 0.0), -2.3)]:
+        host = eng.bin(world[:, 0], world[:, 1], vehicle, yaw).copy()
+        dev = eng.gpu.bin(d, n, eng.buffers, vehicle, yaw).get()
+        assert np.array_equal(dev, host), f"yaw {yaw}"
+        assert (host >= 0).sum() > n // 4 and (host < 0).sum() > 0
 
 
 @needs_cuda
