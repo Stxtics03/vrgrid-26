@@ -72,7 +72,7 @@ estimators making one pass each agree exactly, 0 of 1.48 M points differing.
 | Ring-1 reproduction mismatch (seq 07) | **ROOT-CAUSED** — the singleton. Seq 08 immune; seq 00 open (R-f). | `870766c` |
 | Build provenance (native build vs wheel) | **Closed as a documented unknown** on your call — needs a multi-GB toolchain. | — |
 | R11 limits page | **DONE.** | `e4bd731` |
-| Ring 0 has no ρ (`known-limitations` §2b) | **FIXED 2026-09-17.** Within-cell variance in `spread`; ring 0 ρ 1.16 [1.11–1.29], n = 11. Roughness in the regret costmap keeps between-cell variance only. | — |
+| Ring 0 has no ρ (`known-limitations` §2b) | **FIXED 2026-09-17.** Within-cell variance in `spread`; ring 0 ρ 1.17 [1.13–1.29], n = 11 (after the §11 band fix). Roughness in the regret costmap keeps between-cell variance only. | — |
 | §9.2 per-ring reference restricted to what each ring received (Aakash handover 2 Sep) | **DONE 2026-09-17.** `RingObservations`; `known-limitations` §9. | — |
 | §2b eleven-sequence table stale | **REGENERATED 2026-09-17.** Ring 1 ρ 1.39 [1.22–1.53] (was 1.45 [1.26–1.59]); deck docs updated. | — |
 | Money plot non-monotone step (Aakash handover 2 Sep) | **RESOLVED 2026-09-17** for seq 08 — paired over the same queries it is noise. Two real steps found elsewhere, see §5b. | — |
@@ -85,7 +85,8 @@ estimators making one pass each agree exactly, 0 of 1.48 M points differing.
 
 | # | item | notes |
 |---|---|---|
-| **N-1** | **Ring 3 on 08 / 09 / 10**: ρ 1.84 / 1.64 / 1.82, and **unchanged against the ring's own returns**. | The disagreement is inside the map, not the reference. 08's 45.7 m climb vs the 8 m band, and §10.4 at 50–100 m, are the candidates. `known-limitations` §9. |
+| ~~**N-1**~~ | ~~Ring 3 on 08 / 09 / 10~~ **FIXED 2026-09-17.** Out-of-band heights were fused and re-basing hid saturation. 08 ρ 1.84 → 1.03. | `known-limitations` §11 |
+| **N-5** | **The band's floor is ~2–3 m below road level.** Far-field downhill ground leaves it; seq 04 ring 3 got worse (20.6 → 24.5 cm) at the edge. | Rebalancing the 8 m band is a team decision; memory unchanged. `known-limitations` §11. |
 | **N-2** | **Seq 07 uniform 20 cm regret spike** (+0.72 vs 10 cm, −0.65 vs 40 cm, ~8 SE paired) and **seq 09** 40 cm < 20 cm (2.6 SE). | Real, not query noise. A §7.1 threshold landing between cell sizes is the first check. `known-limitations` §10. |
 | **N-3** | **Seq 00 ring 2**: ρ 2.20 → 1.02 against its own returns. | Cross-look disagreement at 20–50 m, not coarsening. Cause open. `known-limitations` §9. |
 | **N-4** | GitHub #6 ("dashboard/ has been removed") is stale since PR #7 brought Rerun back. | Shrestha's own issue; close it when convenient. |

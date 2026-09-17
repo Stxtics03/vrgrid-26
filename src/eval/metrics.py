@@ -133,7 +133,7 @@ swapped for its replacement.
   so the memory objection no longer applies. Pass it as `reference` and every
   metric here scores against it (`_compared` asks it `for_ring`). Across all
   eleven sequences the effect is NOT second order: ring 2's median RMSE is
-  9.22 cm against M* and 2.62 cm against its own returns. What that difference
+  9.50 cm against M* and 2.62 cm against its own returns. What that difference
   is -- cross-look disagreement, not coarsening -- and why rho ~ 1.03 against
   it is not a headline, is `known-limitations.md` §9. The synthetic figures
   above are left as they were measured.
@@ -144,8 +144,8 @@ scored population, and rho moves by up to 0.06 per ring on the synthetic
 sequence. **§2b's table should be regenerated with this fix before rho is
 quoted to two decimals.** The finding survives in shape -- 0.06 does not move
 rho out of its band -- but the second decimal is not currently earned.
-*(Regenerated 2026-09-17: ring 1 rho 1.39 [1.22-1.53] on the between-cell
-spread, 1.25 [1.14-1.37] with the within-cell term; §2b.)*
+*(Regenerated 2026-09-17: ring 1 rho 1.36 [1.16-1.53] on the between-cell
+spread, 1.22 [1.11-1.36] with the within-cell term; §2b.)*
 """
 
 import numpy as np
@@ -199,7 +199,7 @@ def _ring_cells(gm, ring: int):
     return slots[serves], ix[serves] * k, iy[serves] * k
 
 
-def _compared(gm, reference, ring: int, require_observed=True):
+def _compared(gm, reference, ring: int, require_observed=True, within_cell=True):
     """The cells of `ring` that can honestly be scored, with their reference
     statistics. Returns (slots, n_ref, ref_mean_cm, ref_var_cm2, mine_cm,
     ref_returns): `n_ref` counts observed 5 cm cells, `ref_returns` counts the
@@ -217,7 +217,7 @@ def _compared(gm, reference, ring: int, require_observed=True):
     # every ring.
     if hasattr(reference, "for_ring"):
         reference = reference.for_ring(ring)
-    n_ref, ref_mean, ref_var = reference.block_stats(i_lo, j_lo, k)
+    n_ref, ref_mean, ref_var = reference.block_stats(i_lo, j_lo, k, within_cell)
     returns = reference.block_returns(i_lo, j_lo, k)
 
     keep = n_ref > 0
@@ -278,7 +278,7 @@ def height_rmse_per_ring(gm, reference):
     return out
 
 
-def coarsening_ratio_per_ring(gm, reference):
+def coarsening_ratio_per_ring(gm, reference, within_cell: bool = True):
     """⚑ rho = IL / spread, per ring. Math §9.3, eqs. (27)-(28).
 
     The number that expresses the thesis, and the one nobody else in the
@@ -294,6 +294,11 @@ def coarsening_ratio_per_ring(gm, reference):
     roughness, and the schedule is too aggressive or the fusion is wrong.
 
     Returns {ring: {il_cm, bias_cm, spread_cm, rho, n}}.
+
+    `within_cell=False` scores spread on the variance BETWEEN the reference's
+    5 cm cells only -- the definition before 2026-09-17, and the conservative
+    one, because the within-cell term carries sensor noise and pose jitter as
+    well as terrain and pulls rho toward 1. Ring 0 has no rho under it.
 
     Cells whose reference footprint holds a single RETURN are excluded from
     rho: their spread is 0 by construction, not by flatness, and dividing by it
@@ -325,8 +330,9 @@ def coarsening_ratio_per_ring(gm, reference):
     """
     out = {}
     for ring in range(len(gm.schedule.rings)):
-        _, _, ref_mean, ref_var, mine, returns = _compared(gm, reference, ring)
-        usable = returns > 1
+        _, n_ref, ref_mean, ref_var, mine, returns = _compared(
+            gm, reference, ring, within_cell=within_cell)
+        usable = returns > 1 if within_cell else n_ref > 1
         bias2 = (mine - ref_mean) ** 2
         il2 = bias2 + ref_var
 

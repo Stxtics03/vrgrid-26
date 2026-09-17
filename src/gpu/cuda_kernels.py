@@ -231,6 +231,7 @@ def payload(dtype):
         double zc = world[3 * i + 2] * 100.0;
         if (has_datum) zc = zc - datum100;
         zc = nearbyint(zc);
+        if (zc < -200.0 || zc > 600.0) wq = 0;   // kernels.out_of_band
         if (zc < -200.0) zc = -200.0;
         if (zc > 600.0) zc = 600.0;
         zcm = (short)zc;
@@ -415,12 +416,14 @@ def apply_miss():
 
 def rebase_heights():
     """`shift.track_datum`'s in-range re-base: ground always, ceiling only
-    where one was seen (the sentinel is not a height)."""
+    where one was seen (the sentinel is not a height), and a ground height that
+    leaves the band loses its evidence (variance code 0)."""
     return _kernel("rebase",
         "int32 delta, int32 zmin, int32 zmax, int16 none",
-        "int16 g, int16 c",
+        "int16 g, int16 c, uint8 var",
         r"""
         int v = (int)g - delta;
+        if (v < zmin || v > zmax) var = 0;
         v = v < zmin ? zmin : (v > zmax ? zmax : v);
         g = (short)v;
         if (c != none) {

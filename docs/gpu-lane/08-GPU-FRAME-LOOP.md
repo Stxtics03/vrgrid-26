@@ -56,7 +56,10 @@ image (NaN-aware), inverse index, reflectivity bytes, semantic labels, motion
 flags, every counter, and the full-grid hash. Patchwork++ runs once and both
 paths get its mask; running it twice would compare D1, not the GPU.
 
-- **identical on 200 / 200 frames**, final map hash `4e180a121d7b5aaac95df6a97fe2374b`.
+- **identical on 200 / 200 frames**, final map hash `a9f979df7cb1910ac3358fe46191ea65`
+  (after the 8 m band fix, `known-limitations.md` §11: `payload` zeroes the weight
+  of out-of-band ground and `rebase_heights` drops evidence that leaves the band;
+  `4e180a121d7b5aaac95df6a97fe2374b` before it, same day).
   (Before 2026-09-17 it was `4313df1a58e68f0ed69a6e5417db4000`. The change is the
   per-block ring rule of open item D2 on BOTH paths -- 0.224% of returns that
   used to be dropped are now binned -- and the two paths still agree.)

@@ -47,6 +47,7 @@ from vrgrid.gpu.device import (
 from vrgrid.gpu.kernels import (
     CEILING_NONE,
     measurement_variance_cm2,
+    out_of_band,
     quantise_height,
     quantise_weight,
     scatter_sorted,
@@ -340,10 +341,13 @@ class MapEngine:
 
         rng_m = np.sqrt(xs * xs + ys * ys + (zs) * (zs))
         with stage("scatter"):
+            w_q = quantise_weight(measurement_variance_cm2(np.maximum(rng_m, 1e-3)))
+            # a clamped height is not a measurement (`kernels.out_of_band`)
+            w_q[out_of_band(world[:, 2], self.z_datum)] = 0
             aggregate = scatter_sorted(
                 idx,
                 quantise_height(world[:, 2], self.z_datum),
-                quantise_weight(measurement_variance_cm2(np.maximum(rng_m, 1e-3))),
+                w_q,
                 np.asarray(frame.reflectivity8)[:n].astype(np.uint8),
                 cls,
                 np.asarray(frame.ground)[:n].astype(bool),

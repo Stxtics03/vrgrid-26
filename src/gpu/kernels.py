@@ -146,6 +146,30 @@ def quantise_height(z_m, datum_m: float = 0.0) -> np.ndarray:
     return np.clip(z_cm, Z_MIN_CM, Z_MAX_CM).astype(np.int16)
 
 
+def out_of_band(z_m, datum_m: float = 0.0) -> np.ndarray:
+    """Which heights `quantise_height` would CLAMP rather than store.
+
+    Same arithmetic in the same order -- scale, subtract the datum, round --
+    so a height exactly on the edge after rounding is in the band, exactly as
+    the clamp leaves it untouched.
+
+    ⚑ A clamped ground return is not a measurement, and fusing one as if it
+      were is how ring 3 read 54.8 cm RMSE on seq 08 while its median error
+      was 0.32 cm: ground 10-21 m below the vehicle's band, 50-100 m away,
+      entered the Kalman update at the band floor and dragged nine cells a
+      metre off, carrying 99.5% of the ring's squared error. So the callers
+      zero these returns' HEIGHT weight: they still count as observations and
+      still stay out of the ceiling, but they cannot move `ground_height`. A
+      cell whose only ground is outside the band keeps no height -- unknown,
+      which is true -- instead of a confident wrong one.
+    """
+    z_cm = np.asarray(z_m, dtype=np.float64) * 100.0
+    if datum_m:
+        z_cm -= datum_m * 100.0
+    np.rint(z_cm, out=z_cm)
+    return (z_cm < Z_MIN_CM) | (z_cm > Z_MAX_CM)
+
+
 class CellAggregate:
     """One frame's evidence, per touched cell. Input to fuse() (math §3.3).
 
@@ -197,8 +221,9 @@ class CellAggregate:
 
         `quantise_weight()` clips every point's weight to >= 1, so a zero sum
         cannot mean "ground returns that happened to weigh nothing". It means
-        the cell held nothing but canopy, wall or vehicle, and §3 has no height
-        measurement to offer for it.
+        the cell held nothing but canopy, wall or vehicle -- or ground outside
+        the 8 m band, whose weight the caller zeroed (`out_of_band`) -- and §3
+        has no height measurement to offer for it.
         """
         return self.w_sum > 0
 

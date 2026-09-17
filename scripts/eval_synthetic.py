@@ -321,7 +321,7 @@ def main():
             # Without it M* averages building facades into the road surface --
             # +139.86 cm of bias on seq 07, against a coarsening error that
             # should be sub-centimetre.
-            reference = build_from_scans(real_scans(args.seq, args.frames))
+            reference = build_from_scans(real_scans(args.seq, args.frames), band=True)
             print(f"reference map:      {reference}\n")
             # ⚑ NOT `(frames - 1) * 2.0`. That is the synthetic car driving
             #   straight down y = 0; a real one turns, and `costmaps_for`'s own
@@ -331,7 +331,7 @@ def main():
         else:
             write_sequence(root, "99", n_frames=args.frames)
             print(f"synthetic sequence: {args.frames} frames in {root}")
-            reference = build_from_scans(read_sequence(root, "99"))
+            reference = build_from_scans(read_sequence(root, "99"), band=True)
             print(f"reference map:      {reference}\n")
             vehicle_x = (args.frames - 1) * 2.0
         schedules = ([load(n) for n in SCHEDULES]
@@ -376,6 +376,10 @@ def main():
                 rows.append((result, plan_regret_for(gm, reference, vehicle_x, mask)))
                 continue
             print(format_result(result, schedule))
+            between = metrics.coarsening_ratio_per_ring(gm, reference, within_cell=False)
+            print("  rho, spread between 5 cm cells only (conservative): "
+                  + "  ".join(f"r{L} {between[L]['rho']:.2f}" if between[L]["n"] else f"r{L} --"
+                              for L in range(len(schedule.rings))))
             print(format_observed(gm, observed, result, schedule))
             print(f"  transient: {stats.dynamic_points:,} dynamic returns routed "
                   f"out of the persistent map, {stats.tracks} tracks alive; "

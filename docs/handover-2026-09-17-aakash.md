@@ -54,7 +54,7 @@ Full write-up: `docs/known-limitations.md` §8; status block at the top of
   With the term in, seq 08's R(S) went 0.127 → 2.497: within-cell variance is
   sensor noise as much as terrain, and the map side of the costmap has none.
   Roughness keeps its old definition.
-- Result: ring 0 ρ **1.16 [1.11–1.29]**, n = 11. Ring 1 moves 1.39 → 1.25 —
+- Result (final, after the band fix): ring 0 ρ **1.17 [1.13–1.29]**, n = 11. Ring 1 reads 1.36 on the between-cell spread and 1.22 with the term —
   the flattering direction you predicted, so §2b publishes both.
 
 ## 3. §9.2 against only what each ring received. `reference_map.py`, `harness.py`
@@ -65,12 +65,21 @@ Your handover item. `RingObservations` (sparse, per ring) is filled by
 `known-limitations.md` §9. Short version: ρ 1.03–1.08, which is *not* a
 headline (same returns on both sides); ~70% of ring 2's median RMSE is
 cross-look disagreement, not coarsening; **seq 00's ring-2 outlier is
-cross-look disagreement** (ρ 2.20 → 1.02); **ring 3 on 08/09/10 is inside the
-map** (unchanged under M\*|ring) — new, not investigated.
+cross-look disagreement** (ρ 2.20 → 1.02); **ring 3 on 08/09/10 was inside the
+map** (unchanged under M\*|ring) — traced to the 8 m band and fixed, §3b.
 
 ⚑ One bug of mine on the way, found and fixed before any number was
   recorded: the packed cell key overflowed the sign bit. Pinned by
   `test_ring_observations_rebuild_m_star_exactly`.
+
+## 3b. Ring 3 on 08/09/10 — the 8 m band. `fusion.py`, `harness.py`, `reference_map.py`
+
+Out-of-band ground returns now carry no height weight in `scatter`, and M\* is
+built with `band=True` so it leaves out exactly those. My half is
+`gpu/kernels.py`, `gpu/shift.py` and the CUDA kernels. 08 ring 3: ρ 1.84 → 1.03.
+Seq 04 ring 3 is worse at the band floor, and the reason is traced in
+`known-limitations.md` §11 — please read it before deciding whether to rebalance
+the band.
 
 ## 4. §2b regenerated, all eleven sequences
 
@@ -89,7 +98,6 @@ the same 64 queries**. See `known-limitations.md` §10. **Seq 08's step is noise
 
 ## Not done, and why
 
-- **Ring 3 on 08/09/10** (above) — new finding, needs its own investigation.
 - **Seq 07 / 09's 20 cm regret step** (§10) — new finding, not investigated.
 - **Seq 00's cross-look disagreement at ring 2** — narrowed (§9), cause open.
 - **D1, the Patchwork++ singleton** (GitHub #1) — JP's file.

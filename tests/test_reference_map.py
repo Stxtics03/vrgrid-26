@@ -512,3 +512,22 @@ def test_ring_zero_has_a_rho(sequence):
     assert np.isfinite(rho[0]["rho"]) and rho[0]["n"] > 0
     assert rho[0]["n"] > 0.2 * rmse_cells, (rho[0]["n"], rmse_cells)
     assert rho[0]["spread_cm"] > 0
+
+
+def test_a_banded_reference_leaves_out_exactly_what_the_map_cannot_hold(sequence):
+    """`band=True` drops the ground returns outside the 8 m band around the
+    vehicle -- the ones `scatter` gives no height weight -- counts them, and
+    changes nothing else."""
+    scans = list(read_sequence(sequence, "99"))
+    plain = build_from_scans(scans)
+    banded = build_from_scans(scans, band=True)
+    assert banded.out_of_band_returns == 0          # the synthetic scene fits
+    assert np.array_equal(banded.count, plain.count)
+
+    pts, labels, pose = scans[0]
+    deep = np.vstack([pts, [[30.0, 0.0, -25.0], [31.0, 0.0, -25.0]]])
+    labels2 = np.concatenate([labels, np.array([40, 40], labels.dtype)])
+    banded = build_from_scans([(deep, labels2, pose)] + scans[1:], band=True)
+    assert banded.out_of_band_returns == 2
+    assert banded.observed.sum() == plain.observed.sum()
+    assert "outside the map's band" in repr(banded)

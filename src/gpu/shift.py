@@ -248,6 +248,15 @@ def track_datum(grid, datum_m, ego_z_m: float) -> float:
       depth -- are unaffected. A datum that moved without re-basing would put a
       spurious step between any two cells last seen at different elevations.
 
+    ⚑ A height that leaves the band is not clamped into a new one. Until
+      2026-09-17 it was: a cell at the +6 m ceiling became +5 m after a 1 m
+      step and no longer looked saturated to anything -- seq 09 had 25 ring-3
+      cells at exactly +5.00 m and seq 10 had 168 at exactly -1.00 m, all
+      scored and all planned on as real ground. The stored value is still
+      clamped (int16 has to hold something), but its height evidence is
+      dropped: variance code 0, the codec's "never fused", so the cell reads
+      unknown and the next in-band return replaces it outright.
+
     ⚑ This allocates (the `seen` mask, 0.91 MB against a 10.92 MB grid) and is
       the one path in the frame loop that does. It is freed immediately and it
       is rare: seq 08 crosses a 1 m step 46 times in 4,071 frames. Measured at
@@ -270,6 +279,7 @@ def track_datum(grid, datum_m, ego_z_m: float) -> float:
         # an intermediate that is about to be clipped anyway.
         end = Z_MIN_CM if delta_cm > 0 else Z_MAX_CM
         ground[:] = end
+        grid["height_variance"][:] = 0
         ceiling[seen] = end
         return want
 
@@ -279,6 +289,8 @@ def track_datum(grid, datum_m, ego_z_m: float) -> float:
     # ever seen" into a ceiling at the band's edge, and §7.1 would read that as
     # a clearance failure over the whole map.
     np.subtract(ground, delta_cm, out=ground)
+    lost = (ground < Z_MIN_CM) | (ground > Z_MAX_CM)
+    grid["height_variance"][lost] = 0
     np.clip(ground, Z_MIN_CM, Z_MAX_CM, out=ground)
     np.subtract(ceiling, delta_cm, out=ceiling, where=seen)
     np.clip(ceiling, Z_MIN_CM, Z_MAX_CM, out=ceiling, where=seen)

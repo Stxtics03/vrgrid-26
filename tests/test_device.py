@@ -217,3 +217,33 @@ def test_device_step_allocates_almost_nothing_on_the_host():
 def test_device_memory_is_declared():
     b = _engine("cuda").device_bytes()
     assert b["static"] > 0 and b["pool_reserved"] >= b["pool_used"] > 0
+
+
+@needs_cuda
+def test_device_rebase_drops_evidence_exactly_as_the_host_does():
+    """`DeviceMap.track_datum` against `shift.track_datum`, heights spread
+    across and past both band edges, for an in-range step and for a step
+    wider than the band."""
+    import cupy as cp
+    from vrgrid.gpu.kernels import CEILING_NONE, Z_MAX_CM, Z_MIN_CM
+    from vrgrid.gpu.shift import track_datum
+
+    rng = np.random.default_rng(9)
+    for ego in (-1.3, 3.7, -40.0):
+        eng = _engine("cuda")
+        n = eng.gpu.grid["ground_height"].size
+        g = rng.integers(Z_MIN_CM, Z_MAX_CM + 1, n).astype(np.int16)
+        c = np.where(rng.random(n) < 0.3, CEILING_NONE,
+                     rng.integers(Z_MIN_CM, Z_MAX_CM + 1, n)).astype(np.int16)
+        v = rng.integers(1, 256, n).astype(np.uint8)
+        ref = {"ground_height": g.copy(), "ceiling_height": c.copy(), "height_variance": v.copy()}
+        eng.gpu.grid["ground_height"].set(g)
+        eng.gpu.grid["ceiling_height"].set(c)
+        eng.gpu.grid["height_variance"].set(v)
+
+        want_datum = track_datum(ref, 0.0, ego)
+        got_datum = eng.gpu.track_datum(0.0, ego)
+        assert got_datum == want_datum
+        for k, want in ref.items():
+            assert np.array_equal(cp.asnumpy(eng.gpu.grid[k]), want), (ego, k)
+        assert (ref["height_variance"] == 0).any(), "the fixture must leave the band"

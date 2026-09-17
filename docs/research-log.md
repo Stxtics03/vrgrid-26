@@ -480,3 +480,17 @@ Driving the shipping code with one `Timer` shared across both halves, 200 frames
 **Source:** `python scripts/eval_synthetic.py --seq <00..10> --frames 40`. `python scripts/gpu_parity.py --seq 08 --frames 200`. `python scripts/timing_table.py --seq 08 --frames 200 --device {cpu,cuda}`.
 
 **So what:** The partition theorem now holds on the real frame path, not only in the unit test's frame. The headline ρ is regenerated and quoted two ways. The accuracy budget has a new decomposition, which says the next centimetres are in cross-look registration, not in the schedule.
+
+## 2026-09-17 (later) — Shrestha
+
+**Module:** D3 — the 8 m band (`gpu/kernels.py`, `gpu/shift.py`, CUDA kernels), and its scoring
+
+**What happened:** Ring 3 on 08/09/10 was the open item §9 had just narrowed to "inside the map". There were two defects. Out-of-band ground was clamped and then fused at full Kalman weight: on 08, returns 20–26 m below the road put 99.5% of ring 3's squared error in nine cells. And datum re-basing moved band-edge cells 1 m inside the band, where nothing could see they were saturated: 25 cells on 09 at exactly +5.00 m, 168 on 10 at exactly −1.00 m. Now a return outside the band carries no height weight, and a re-based height that leaves the band loses its evidence. The same logic runs on CPU and GPU, and the two are still identical on 200/200 frames. Scoring uses the same rule, through `build_from_scans(band=True)`.
+
+**Numbers:** ring 3 ρ 08 1.84 → 1.03, 09 1.64 → 1.48 (the rest is cross-look disagreement), 10 1.82 → 1.13. Latency is unchanged (cuda 22.3 / 25.9 ms).
+
+**⚑ Cost:** seq 04's ring 3 got worse (20.6 → 24.5 cm). Traced one cell: the true ground sits 2 cm below the floor after a datum step, and a misclassified return 3 m above it now defines the cell. The band floor is only ~2–3 m below road level, so rebalancing it is open item N-5 and needs a team decision.
+
+**Final headline after both fixes:** ring 1 ρ 1.36 [1.16–1.53] (between-cell) / 1.22 [1.11–1.36] (with within-cell term); ring 0 ρ 1.17 [1.13–1.29]. The figures in the entry above predate the band fix.
+
+**Source:** `python scripts/eval_synthetic.py --seq <00..10> --frames 40`; `known-limitations.md` §11.

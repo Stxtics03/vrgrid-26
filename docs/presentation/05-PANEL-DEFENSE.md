@@ -83,11 +83,11 @@ given what is actually in your repo.
 > first two that finished downloading and most development happened against them.
 > Once the full 84.8 GB landed we re-ran the accuracy table across all eleven
 > labelled sequences and we report the distribution rather than our best number:
-> ρ median 1.39, range 1.22 to 1.53, n equals 11 — and the finest ring, ring 0,
-> at 1.16 once spread counts the variance inside each 5 cm cell.*
+> ρ median 1.36, range 1.16 to 1.53, n equals 11 — and the finest ring, ring 0,
+> at 1.17 once spread counts the variance inside each 5 cm cell.*
 >
 > *And we flag in our own limitations document that 07 and 08 sit at the good end
-> of that range — 1.23 and 1.22 against a median of 1.39 — which is exactly why
+> of that range — 1.24 and 1.22 against a median of 1.36 — which is exactly why
 > we quote the range rather than a sequence.*
 >
 > ⚑ *Regenerated 2026-09-17 (`known-limitations.md` §2b); the 2 Sep figures were

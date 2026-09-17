@@ -263,39 +263,40 @@ committed; `.gitignore` excludes them by design.)*
 ring rule, and **`spread` now includes the within-cell variance**, which is
 what gives ring 0 a ρ at all (the deferred fix described below, now done).
 
-| seq | r0 RMSE | **r0 ρ** | r1 RMSE | r1 ρ | r2 RMSE | r2 ρ | r3 RMSE | r3 ρ |
-|---|---|---|---|---|---|---|---|---|
-| 00 | 2.73 | 1.24 | 6.42 | 1.26 | 33.54 | 2.20 | 9.43 | 1.26 |
-| 01 | 1.59 | 1.23 | 2.09 | 1.30 | 3.83 | 1.33 | 10.04 | 1.32 |
-| 02 | 1.35 | 1.12 | 8.13 | 1.37 | 14.24 | 1.28 | 15.03 | 1.43 |
-| 03 | 5.26 | 1.29 | 12.60 | 1.30 | 15.96 | 1.38 | 7.58 | 1.16 |
-| 04 | 0.91 | 1.14 | 3.96 | 1.19 | 12.36 | 1.24 | 20.61 | 1.25 |
-| 05 | 1.26 | 1.17 | 3.73 | 1.36 | 11.01 | 1.37 | 14.78 | 1.20 |
-| 06 | 4.20 | 1.11 | 2.92 | 1.23 | 9.22 | 1.30 | 12.90 | 1.12 |
-| 07 | 1.77 | 1.25 | 2.83 | 1.14 | 5.99 | 1.14 | 13.64 | 1.19 |
-| 08 | 1.17 | 1.15 | 2.31 | 1.16 | 4.02 | 1.08 | 54.80 | 1.84 |
-| 09 | 1.83 | 1.16 | 3.27 | 1.25 | 4.79 | 1.25 | 25.55 | 1.64 |
-| 10 | 1.60 | 1.16 | 3.57 | 1.18 | 6.52 | 1.29 | 10.58 | 1.82 |
+| seq | r0 RMSE | **r0 ρ** | r1 RMSE | r1 ρ | r1 ρ cons. | r2 RMSE | r2 ρ | r3 RMSE | r3 ρ |
+|---|---|---|---|---|---|---|---|---|---|
+| 00 | 2.65 | 1.24 | 6.42 | 1.26 | 1.39 | 33.54 | 2.20 | 9.43 | 1.26 |
+| 01 | 1.59 | 1.23 | 2.09 | 1.30 | 1.53 | 3.87 | 1.34 | 7.55 | 1.25 |
+| 02 | 0.84 | 1.13 | 2.29 | 1.22 | 1.36 | 15.33 | 1.32 | 15.03 | 1.43 |
+| 03 | 5.20 | 1.29 | 12.60 | 1.30 | 1.41 | 15.96 | 1.38 | 7.16 | 1.19 |
+| 04 | 0.91 | 1.14 | 3.95 | 1.20 | 1.25 | 12.39 | 1.25 | 24.47 | 1.36 |
+| 05 | 1.26 | 1.17 | 3.73 | 1.36 | 1.52 | 9.54 | 1.37 | 14.78 | 1.20 |
+| 06 | 1.25 | 1.18 | 2.86 | 1.22 | 1.34 | 9.50 | 1.31 | 12.96 | 1.14 |
+| 07 | 1.76 | 1.28 | 2.82 | 1.15 | 1.24 | 5.99 | 1.14 | 13.63 | 1.20 |
+| 08 | 1.17 | 1.15 | 2.31 | 1.16 | 1.22 | 4.02 | 1.08 | 2.97 | 1.03 |
+| 09 | 1.83 | 1.16 | 3.27 | 1.25 | 1.40 | 4.79 | 1.25 | 14.81 | 1.48 |
+| 10 | 1.60 | 1.16 | 2.71 | 1.11 | 1.16 | 6.52 | 1.29 | 2.57 | 1.13 |
 
 ```
-                    rho, spread incl. within-cell     rho, between-cell only (2 Sep definition)
-ring 0:  median 1.16 [1.11-1.29]                      -- (not computable)
-ring 1:  median 1.25 [1.14-1.37]                      1.39 [1.22-1.53]
-ring 2:  median 1.29 [1.08-2.20]                      1.33 [1.09-2.38]
-ring 3:  median 1.26 [1.12-1.84]                      1.26 [1.13-1.87]
-RMSE medians (cm), unaffected by the spread definition:
-         r0 1.60 [0.91-5.26]  r1 3.57 [2.09-12.60]  r2 9.22 [3.83-33.54]  r3 13.64 [7.58-54.80]
+         rho, incl. within-cell      rho, between-cell only (conservative)
+ring 0:  1.17 [1.13-1.29]            -- (not computable)
+ring 1:  1.22 [1.11-1.36]            1.36 [1.16-1.53]
+ring 2:  1.31 [1.08-2.20]            1.34 [1.09-2.38]
+ring 3:  1.20 [1.03-1.48]            1.21 [1.03-1.48]
+RMSE medians (cm): r0 1.59 [0.84-5.20]  r1 2.86 [2.09-12.60]  r2 9.50 [3.87-33.54]  r3 12.96 [2.57-24.47]
 ```
 
 **What to quote.** Ring 0 now has a ρ, and it is the best of any ring, which is
 what §9.3 predicts for the finest cell. But the within-cell variance is sensor
-noise and pose jitter as much as terrain, so it moves every ρ toward 1 — ring 1
-from 1.39 to 1.25. **Quote both**: "ρ = 1.25 at ring 1 (1.14–1.37, n = 11) and
-1.16 at ring 0; 1.39 at ring 1 if spread excludes within-cell variance." The
-second number is the conservative one and the one the 2 Sep slides were built
-on, now regenerated. The median RMSE at ring 1 is 3.57 cm either way.
+noise and pose jitter as much as terrain, so it moves every ρ toward 1. **Quote
+both**: "ρ = 1.36 at ring 1 (1.16–1.53, n = 11) on the between-cell spread —
+the conservative definition the 2 Sep slides used — and 1.22 (1.11–1.36) with
+the within-cell term, which also gives ring 0 a ρ of 1.17 (1.13–1.29)." Median
+ring-1 RMSE is 2.86 cm either way. Both print from one run of
+`eval_synthetic.py` (the `conservative` line under each table), and include
+§8's ring rule and §11's band fix.
 
-Seq 00's ring-2 outlier (2.20) and ring 3 on 08, 09 and 10 are examined in §9.
+Seq 00's ring-2 outlier (2.20) is examined in §9; ring 3 on 08, 09 and 10 was the band defect of §11.
 
 ### As published 2 Sep — superseded
 
@@ -419,7 +420,7 @@ in which to ship a headline-metric change two days before submission.
 
 **Status: DONE 2026-09-17.** `ReferenceMap` stores the within-cell variance,
 `block_stats` adds it by the law of total variance, and the ρ guard counts
-returns rather than cells. Ring 0 ρ across all eleven: **1.16 [1.11–1.29]** —
+returns rather than cells. Ring 0 ρ across all eleven: **1.17 [1.13–1.29]** —
 the prediction above held. Every cached M\* `.npz` is refused by `load()` until
 rebuilt. The roughness bit in `plan_regret.costmap_from_reference` keeps the
 between-cell variance only; including the within-cell term there took seq 08's
@@ -967,22 +968,22 @@ All eleven sequences, 40 frames, 5/10/20/40:
 | seq | r0 ρ | r1 RMSE | r1 ρ | r2 RMSE | r2 ρ | r3 RMSE | r3 ρ |
 |---|---|---|---|---|---|---|---|
 | 00 | 1.06 | 3.38 | 1.10 | 1.54 | 1.02 | 1.60 | 1.01 |
-| 01 | 1.05 | 0.79 | 1.08 | 0.96 | 1.04 | 5.85 | 1.13 |
-| 02 | 1.06 | 1.02 | 1.05 | 3.34 | 1.02 | 1.68 | 1.01 |
-| 03 | 1.06 | 5.51 | 1.10 | 3.53 | 1.03 | 2.83 | 1.03 |
-| 04 | 1.05 | 2.17 | 1.08 | 3.59 | 1.03 | 6.52 | 1.04 |
+| 01 | 1.05 | 0.79 | 1.08 | 1.12 | 1.06 | 1.68 | 1.02 |
+| 02 | 1.06 | 1.02 | 1.05 | 6.58 | 1.08 | 1.68 | 1.01 |
+| 03 | 1.06 | 5.51 | 1.10 | 3.53 | 1.03 | 1.35 | 1.01 |
+| 04 | 1.05 | 1.69 | 1.05 | 3.71 | 1.03 | 14.74 | 1.20 |
 | 05 | 1.10 | 0.91 | 1.06 | 2.42 | 1.04 | 3.49 | 1.02 |
-| 06 | 1.06 | 1.36 | 1.07 | 3.29 | 1.05 | 2.52 | 1.01 |
-| 07 | 1.08 | 1.92 | 1.07 | 3.02 | 1.04 | 5.01 | 1.03 |
-| 08 | 1.12 | 1.28 | 1.06 | 2.62 | 1.04 | 54.76 | 1.84 |
-| 09 | 1.07 | 1.77 | 1.10 | 1.09 | 1.02 | 21.12 | 1.61 |
-| 10 | 1.05 | 2.93 | 1.13 | 1.64 | 1.02 | 10.34 | 1.80 |
+| 06 | 1.06 | 1.35 | 1.07 | 4.02 | 1.08 | 2.16 | 1.01 |
+| 07 | 1.08 | 1.91 | 1.08 | 3.02 | 1.04 | 4.98 | 1.03 |
+| 08 | 1.12 | 1.28 | 1.06 | 2.62 | 1.04 | 2.11 | 1.02 |
+| 09 | 1.07 | 1.77 | 1.10 | 1.09 | 1.02 | 0.97 | 1.01 |
+| 10 | 1.05 | 1.79 | 1.05 | 1.63 | 1.02 | 1.10 | 1.03 |
 
 ```
-M*|ring   ring 0 rho 1.06 [1.05-1.12]
-          ring 1 rho 1.08 [1.05-1.13]   RMSE 1.77 cm [0.79-5.51]   (vs M*: 3.57 [2.09-12.60])
-          ring 2 rho 1.03 [1.02-1.05]   RMSE 2.62 cm [0.96-3.59]   (vs M*: 9.22 [3.83-33.54])
-          ring 3 rho 1.03 [1.01-1.84]   RMSE 5.01 cm [1.60-54.76]  (vs M*: 13.64 [7.58-54.80])
+M*|ring  ring 0  rho 1.06 [1.05-1.12]  RMSE 0.65 [0.45-0.98] cm  (vs M*: 1.59 [0.84-5.20])
+M*|ring  ring 1  rho 1.07 [1.05-1.10]  RMSE 1.69 [0.79-5.51] cm  (vs M*: 2.86 [2.09-12.60])
+M*|ring  ring 2  rho 1.04 [1.02-1.08]  RMSE 2.62 [1.09-6.58] cm  (vs M*: 9.50 [3.87-33.54])
+M*|ring  ring 3  rho 1.02 [1.01-1.20]  RMSE 1.68 [0.97-14.74] cm  (vs M*: 12.96 [2.57-24.47])
 ```
 
 ### How to read it — and how not to
@@ -999,7 +1000,7 @@ M*|ring   ring 0 rho 1.06 [1.05-1.12]
 **What the difference between the two tables is.** Everything §2b's ρ carries
 above this table's is the ring's returns disagreeing with *other* returns of
 the same ground — fired from another range, another frame, another ring. Ring
-2's median RMSE is 9.22 cm against M\* and 2.62 cm against M\*|ring: about 70%
+2's median RMSE is 9.50 cm against M\* and 2.62 cm against M\*|ring: about 70%
 of ring 2's error on the median sequence is that disagreement, not the
 coarsening of 20 cm cells. That is a statement about range-dependent
 observation error (pose drift over the frames between the looks, beam
@@ -1013,12 +1014,10 @@ disagree by ~33 cm RMS with the returns of the same ground from other ranges.
 across looks. **Cause still open** — range-dependent registration on a long
 urban loop is the leading hypothesis.
 
-**Ring 3 on 08, 09 and 10 — a NEW open item.** ρ 1.84 / 1.64 / 1.82 against
-M\*, and **unchanged** against M\*|ring (1.84 / 1.61 / 1.80, RMSE 54.76 / 21.12
-/ 10.34 cm). Here the map disagrees with *the very returns it integrated*, so
-the cause is inside the map, not in the reference. 08 is the sequence with
-45.7 m of climb (§6) and ring 3 is where the 8 m band's datum shifts land;
-§10.4's cleanup at 50–100 m is the other candidate. Not investigated.
+**Ring 3 on 08, 09 and 10 — found here, FIXED, see §11.** ρ 1.84 / 1.64 / 1.82
+against M\*, and unchanged against M\*|ring, so the map disagreed with the very
+returns it integrated. The cause was the 8 m height band. The table above is
+from before that fix; §2b has the current numbers.
 
 ---
 
@@ -1034,13 +1033,13 @@ query is, which the unpaired SEs do not. All eleven sequences, 40 frames:
 
 | seq | 5/10/20/40 | 5/10/50 | uniform 10 cm | 20 cm | 40 cm | 80 cm |
 |---|---|---|---|---|---|---|
-| 00 | 0.054 ± 0.022 | 0.054 ± 0.022 | 0.037 ± 0.018 | 0.037 ± 0.018 | 0.076 ± 0.032 | 0.037 ± 0.018 |
+| 00 | 0.035 ± 0.018 | 0.035 ± 0.018 | 0.028 ± 0.016 | 0.028 ± 0.016 | 0.067 ± 0.031 | 0.028 ± 0.016 |
 | 01 | 0.074 ± 0.028 | 0.074 ± 0.028 | 0.089 ± 0.030 | 0.089 ± 0.030 | 0.054 ± 0.019 | 0.531 ± 0.042 |
 | 02 | 0.138 ± 0.063 | 0.138 ± 0.063 | 0.088 ± 0.029 | 0.088 ± 0.029 | 0.113 ± 0.033 | 0.088 ± 0.029 |
-| 03 | 1.287 ± 0.122 | 1.181 ± 0.115 | 1.240 ± 0.129 | 1.245 ± 0.129 | 1.312 ± 0.128 | 1.438 ± 0.129 |
+| 03 | 1.195 ± 0.124 | 1.089 ± 0.117 | 1.155 ± 0.130 | 1.160 ± 0.130 | 1.228 ± 0.129 | 1.350 ± 0.127 |
 | 04 | 0.012 ± 0.008 | 0.012 ± 0.008 | 0.014 ± 0.007 | 0.026 ± 0.010 | 0.026 ± 0.010 | 0.055 ± 0.021 |
 | 05 | 0.022 ± 0.012 | 0.022 ± 0.012 | 0.047 ± 0.038 | 0.026 ± 0.018 | 0.069 ± 0.031 | 0.132 ± 0.044 |
-| 06 | 0.582 ± 0.143 | 0.582 ± 0.143 | 0.468 ± 0.102 | 0.469 ± 0.091 | 0.419 ± 0.076 | 0.560 ± 0.083 |
+| 06 | 0.582 ± 0.143 | 0.582 ± 0.143 | 0.468 ± 0.102 | 0.469 ± 0.091 | 0.419 ± 0.076 | 0.581 ± 0.084 |
 | 07 | 1.313 ± 0.182 | 1.313 ± 0.182 | 1.519 ± 0.180 | 2.237 ± 0.226 | 1.667 ± 0.200 | 2.338 ± 0.242 |
 | 08 | 0.127 ± 0.034 | 0.127 ± 0.034 | 0.073 ± 0.028 | 0.106 ± 0.033 | 0.124 ± 0.057 | 0.077 ± 0.018 |
 | 09 | 0.004 ± 0.004 | 0.004 ± 0.004 | 0.105 ± 0.035 | 0.105 ± 0.035 | 0.013 ± 0.007 | 0.150 ± 0.031 |
@@ -1063,6 +1062,64 @@ query is, which the unpaired SEs do not. All eleven sequences, 40 frames:
   window lies inside the rings the two schedules share.
 - Seq 10's uniform 20–80 cm steps pair only 3 queries (most are blocked on one
   side); read them as unmeasured.
+
+---
+
+## 11. The 8 m band wrote clamped heights as measurements — FIXED 2026-09-17
+
+*Found through §9: ring 3 on 08, 09 and 10 disagreed with its own returns.*
+
+The map stores heights in an 8 m band (−2 m to +6 m about a datum that follows
+the vehicle in 1 m steps). Two ways a height outside it became a confident,
+wrong one:
+
+1. **Fusion clamped, then averaged.** `quantise_height` clamps; `scatter` gave
+   the clamped value full Kalman weight. On 08, ground returns 20–26 m below
+   the road, 50–100 m out, with 6–11 m of spread inside one 40 cm cell, went in
+   at the band floor. Nine cells carried 99.5% of ring 3's squared error while
+   the median cell was off by 0.32 cm.
+2. **Re-basing hid saturation.** When the datum stepped, a cell at the band
+   edge was shifted and clamped again, landing 1 m inside the band where
+   nothing could tell it was saturated. Seq 09 had 25 ring-3 cells at exactly
+   +5.00 m against a reference of +5.7 to +8.0 m; seq 10 had 168 at exactly
+   −1.00 m against −1.5 to −1.7 m.
+
+**The fix, on both the CPU and CUDA paths:** a ground return outside the band
+carries **no height weight** (`kernels.out_of_band`; it still counts as an
+observation and still stays out of the ceiling). A stored height that leaves
+the band on re-basing **loses its evidence** (variance code 0, the codec's
+"never fused"), so the cell reads unknown until an in-band return arrives.
+The scoring follows the same rule: M\* is built with `band=True`, which applies
+the harness's own per-frame datum and counts what it leaves out (08: 28,679
+ground returns over 40 frames; 07: 28). M\*|ring attributes only what `scatter`
+fused. CPU and GPU remain identical on 200/200 frames of seq 08 (hash
+`a9f979df…`); the device frame is unchanged at 22.3 / 25.9 ms.
+
+| ring 3 | ρ before → after | RMSE before → after | vs own returns after |
+|---|---|---|---|
+| 08 | 1.84 → **1.03** | 54.80 → **2.97** cm | 2.11 cm |
+| 09 | 1.64 → 1.48 | 25.55 → 14.81 cm | 0.97 cm |
+| 10 | 1.82 → **1.13** | 10.58 → **2.57** cm | 1.10 cm |
+
+09's remaining ring-3 error is cross-look disagreement (1.01 against its own
+returns), not the map.
+
+### What it costs, stated
+
+- **A cell with ground just below the floor can end up worse.** Seq 04, ring
+  3: 20.61 → 24.47 cm. Traced cell by cell: the true ground sits 2 cm below the
+  floor after a datum step, its returns are now (correctly) not fused, the
+  cell's clamped height is dropped, and the next ground-labelled return, 3 m
+  above the real surface and probably a Patchwork++ misclassification at
+  80 m, defines the cell. The old code was nearer the truth there only because
+  clamping happened to land 2 cm from it. The rule stays: a clamped height is
+  a bound, not a measurement.
+- **A drop-off below the band is invisible.** A cell whose real ground is
+  beyond the band now reads unknown, which is honest but cannot say "cliff".
+  The band holds only about 2–3 m below road level and 5–6 m above, so
+  far-field downhill terrain leaves it first. Rebalancing the band (still 8 m,
+  so no memory figure moves) is a design decision for the team, not taken
+  here.
 
 ---
 

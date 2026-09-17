@@ -58,7 +58,7 @@ class ReferenceMap:
     """
 
     __slots__ = ("_sat", "cell_m", "class_id", "count", "height_cm", "i0", "j0",
-                 "within_var_cm2")
+                 "out_of_band_returns", "within_var_cm2")
 
     def __init__(self, cell_m, i0, j0, height_cm, count, class_id, within_var_cm2):
         self.cell_m = float(cell_m)
@@ -70,6 +70,9 @@ class ReferenceMap:
         # Population variance of the returns inside each 5 cm cell. What makes
         # ring 0 scoreable at all -- see `block_stats`.
         self.within_var_cm2 = np.asarray(within_var_cm2, dtype=np.float64)
+        # Ground returns `build_from_scans(band=True)` left out because the map
+        # could not hold them. Reported, never silently dropped.
+        self.out_of_band_returns = 0
         self._sat = None
 
     @property
@@ -229,8 +232,10 @@ class ReferenceMap:
         )
 
     def __repr__(self):
+        band = (f", {self.out_of_band_returns:,} ground returns outside the map's band"
+                if self.out_of_band_returns else "")
         return (f"ReferenceMap({self.shape[0]}x{self.shape[1]} @ {self.cell_m*100:.0f} cm, "
-                f"{int(self.observed.sum()):,} observed cells)")
+                f"{int(self.observed.sum()):,} observed cells{band})")
 
 
 class _Builder:
@@ -315,7 +320,8 @@ class _Builder:
                             cls_first.reshape(H, W), within.reshape(H, W))
 
 
-def build_from_scans(scans, out_path=None, cell_m: float = 0.05) -> ReferenceMap:
+def build_from_scans(scans, out_path=None, cell_m: float = 0.05,
+                     band: bool = False) -> ReferenceMap:
     """M* from an iterable of (points in VEHICLE frame, RAW label ids,
     [is_ground,] vehicle -> world 4x4).
 
@@ -335,8 +341,27 @@ def build_from_scans(scans, out_path=None, cell_m: float = 0.05) -> ReferenceMap
       sensor points and a raw `poses.txt` row. Same convention as
       `harness.run_sequence`, deliberately -- M* and M are built from the same
       scans and any disagreement between them is scored as map error.
+
+    `band=True` leaves out the ground returns the map itself cannot hold: those
+    outside the 8 m vertical band around the vehicle, with the band's datum
+    tracked per frame by the same `shift.datum_step` rule the harness and the
+    engine use, and the same `kernels.out_of_band` test `scatter` applies. The
+    count is kept on the map as `out_of_band_returns`.
+
+    ⚑ Why this is not flattering the metric. The map does not fuse those
+      returns -- a clamped height is not a measurement -- so scoring against
+      them scores the band, not the map. On seq 08 they were ground returns
+      20-26 m below the road, 50-100 m out, with 6-11 m of spread inside one
+      40 cm cell: steep structure or noise, carrying 99.7% of ring 3's squared
+      error against cells whose median error was 0.32 cm. The limitation they
+      do reveal -- a drop-off below the band is invisible to this map -- is
+      stated in `known-limitations.md` §11, not scored.
     """
+    from vrgrid.gpu.kernels import out_of_band
+    from vrgrid.gpu.shift import datum_step
+
     b = _Builder(cell_m)
+    datum, dropped = None, 0
     for item in scans:
         # 3-tuple keeps every static return, which is what the synthetic writer
         # wants because all of its returns ARE ground. 4-tuple carries the same
@@ -348,8 +373,15 @@ def build_from_scans(scans, out_path=None, cell_m: float = 0.05) -> ReferenceMap
             (pts, labels, pose), ground = item, None
         pts = np.asarray(pts, dtype=np.float64)
         world = pts @ np.asarray(pose)[:3, :3].T + np.asarray(pose)[:3, 3]
+        if band:
+            datum = datum_step(datum, float(np.asarray(pose)[2, 3]))[0]
+            inside = ~out_of_band(world[:, 2] - datum)
+            g = np.ones(len(world), bool) if ground is None else np.asarray(ground, bool)
+            dropped += int((g & ~inside & ~is_moving(labels)).sum())
+            ground = g & inside
         b.add(world, labels, ground)
     ref = b.finish()
+    ref.out_of_band_returns = dropped
     if out_path is not None:
         ref.save(out_path)
     return ref

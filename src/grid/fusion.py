@@ -468,6 +468,7 @@ def scatter(gm, points_m, class_id, is_ground, reflectivity=None,
     """
     from vrgrid.gpu.kernels import (
         measurement_variance_cm2,
+        out_of_band,
         quantise_height,
         quantise_weight,
         scatter_atomic,
@@ -521,8 +522,11 @@ def scatter(gm, points_m, class_id, is_ground, reflectivity=None,
     # allocates per call -- fine in a test, and 19 MB a frame in the loop,
     # which is more than the whole grid. See gpu/CLAUDE.md.
     scratch = getattr(getattr(gm, "allocation", None), "scratch", None)
-    args = (slots, quantise_height(z if height_m is None else
-                            np.asarray(height_m, dtype=np.float64)), w_q, refl,
+    height = z if height_m is None else np.asarray(height_m, dtype=np.float64)
+    # Ground outside the 8 m band is clamped by `quantise_height`; a clamped
+    # height is not a measurement, so it carries no height weight.
+    w_q = np.where(out_of_band(height), 0, w_q).astype(w_q.dtype)
+    args = (slots, quantise_height(height), w_q, refl,
             np.asarray(class_id, dtype=np.uint8), np.asarray(is_ground, dtype=bool))
     if gm.scatter_mode == "sorted":
         return scatter_sorted(*args, scratch=scratch)

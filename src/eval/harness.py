@@ -29,7 +29,7 @@ import numpy as np
 from vrgrid.eval import metrics
 from vrgrid.eval.reference_map import ReferenceMap, RingObservations
 from vrgrid.gpu.allocators import allocate, bytes_allocated
-from vrgrid.gpu.kernels import CEILING_NONE
+from vrgrid.gpu.kernels import CEILING_NONE, out_of_band
 from vrgrid.gpu.shift import RingBuffer, shift, track_datum
 from vrgrid.grid import gate, traversability
 from vrgrid.grid.fusion import fuse, initialise, scatter
@@ -534,7 +534,11 @@ def run_sequence(gm: GridMap, scans, recentre: bool = True,
             # Attributed with the frame path's own ring rule, on the same
             # world points `scatter` bins, so no return can be credited to a
             # ring that did not receive it.
+            # Only what `scatter` will fuse: ground outside the band carries
+            # no height weight (`kernels.out_of_band`), so it is not part of
+            # what the ring integrated. Same expression as `height_m` below.
             wg = world[static & np.asarray(ground, dtype=bool)]
+            wg = wg[~out_of_band(wg[:, 2] - gm.z_datum_m)]
             scratch, out = gm.bin_scratch(wg.shape[0])
             observed.add(ring_of_into(wg[:, 0], wg[:, 1], gm.schedule, gm.speed_ms,
                                       out[:wg.shape[0]], scratch, gm.buffers,

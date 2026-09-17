@@ -452,9 +452,11 @@ class DeviceMap:
             end = Z_MIN_CM if delta_cm > 0 else Z_MAX_CM
             seen = ceiling != CEILING_NONE
             ground.fill(end)
+            self.grid["height_variance"].fill(0)
             self.cp.copyto(ceiling, np.int16(end), where=seen)
             return want
-        K.rebase_heights()(delta_cm, Z_MIN_CM, Z_MAX_CM, CEILING_NONE, ground, ceiling)
+        K.rebase_heights()(delta_cm, Z_MIN_CM, Z_MAX_CM, CEILING_NONE, ground, ceiling,
+                           self.grid["height_variance"])
         return want
 
     # -- bin, payload, scatter, fuse -------------------------------------------
