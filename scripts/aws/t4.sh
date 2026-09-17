@@ -10,7 +10,20 @@
 #   scripts/aws/t4.sh run            T4 measurements -> results/t4/ on the instance
 #   scripts/aws/t4.sh fetch          copy results/t4 back (json/md/log only)
 #   scripts/aws/t4.sh ssh            open a shell (tmux)
-#   scripts/aws/t4.sh status | stop | start
+#   scripts/aws/t4.sh status | stop | start | cost
+#
+# MONEY: Shrestha's account has $100 of credits and nothing may be billed past
+#   them. AWS has no hard spending cap, so this script is the cap:
+#     - the budget tracks GROSS usage (credits excluded -- by default a budget
+#       nets credits out, reads $0 and never alerts), with alerts at $10, $25,
+#       $50 and a forecast alert at $50
+#     - no Elastic IP (a public IPv4 bills even while the instance is stopped);
+#       the IP is looked up per command instead
+#     - a CloudWatch alarm STOPS the instance after 60 min under 5% CPU
+#     - `run` arms an on-instance `shutdown -h` timer, the instance is set to
+#       STOP (not terminate) on shutdown, and `run` stops it when it finishes
+#     - disk sized to the data staged: 150 GB for `labelled`, 250 GB for `all`
+#     - `cost` prints spend so far (Cost Explorer, gross of credits)
 #
 # Follows docs/gpu-lane/02-AWS-RUNBOOK.md: ap-south-1, g4dn.xlarge, Deep Learning
 # Base OSS Nvidia Driver AMI (Ubuntu 22.04), 250 GB gp3, tagged Project=vrgrid,
@@ -26,9 +39,8 @@ set -euo pipefail
 AWS="${AWS:-$HOME/.local/bin/aws}"
 REGION="${VRGRID_AWS_REGION:-ap-south-1}"
 TYPE="g4dn.xlarge"
-# 250, not the runbook's 150: the whole dataset is 90 GB on disk, and the Deep
-# Learning AMI, the venv, torch and cupy take most of the rest.
-DISK_GB=250
+# The disk is sized to what `stage` uploaded (see launch): every GB of gp3 bills
+# ~$0.09/month for as long as the volume exists, stopped or not.
 STATE="$HOME/.vrgrid-aws"
 KEY_NAME="vrgrid-t4"
 KEY_PATH="$HOME/.ssh/${KEY_NAME}.pem"
@@ -71,13 +83,34 @@ ami() {
 }
 
 budget() {
-    local acct email
+    local acct email n
     acct=$("$AWS" sts get-caller-identity --query Account --output text)
     email="${VRGRID_ALERT_EMAIL:?set VRGRID_ALERT_EMAIL to the address that gets the alert}"
-    "$AWS" budgets create-budget --account-id "$acct" \
-        --budget '{"BudgetName":"vrgrid-t4","BudgetLimit":{"Amount":"50","Unit":"USD"},"TimeUnit":"MONTHLY","BudgetType":"COST"}' \
-        --notifications-with-subscribers "[{\"Notification\":{\"NotificationType\":\"ACTUAL\",\"ComparisonOperator\":\"GREATER_THAN\",\"Threshold\":80,\"ThresholdType\":\"PERCENTAGE\"},\"Subscribers\":[{\"SubscriptionType\":\"EMAIL\",\"Address\":\"$email\"}]}]" \
-        && echo "budget vrgrid-t4: \$50/month, alert at 80% to $email"
+    # Credits EXCLUDED: with them included the budget tracks the net bill,
+    # which the credits hold at $0 right up until they run out.
+    "$AWS" budgets create-budget --account-id "$acct" --budget '{
+        "BudgetName":"vrgrid-t4","BudgetLimit":{"Amount":"50","Unit":"USD"},
+        "TimeUnit":"MONTHLY","BudgetType":"COST",
+        "CostTypes":{"IncludeCredit":false,"IncludeRefund":false,"IncludeTax":true,
+                     "IncludeSubscription":true,"UseBlended":false}}'
+    for n in 20 50 100; do     # $10, $25, $50 actual
+        "$AWS" budgets create-notification --account-id "$acct" --budget-name vrgrid-t4 \
+            --notification "NotificationType=ACTUAL,ComparisonOperator=GREATER_THAN,Threshold=$n,ThresholdType=PERCENTAGE" \
+            --subscribers "SubscriptionType=EMAIL,Address=$email"
+    done
+    "$AWS" budgets create-notification --account-id "$acct" --budget-name vrgrid-t4 \
+        --notification "NotificationType=FORECASTED,ComparisonOperator=GREATER_THAN,Threshold=100,ThresholdType=PERCENTAGE" \
+        --subscribers "SubscriptionType=EMAIL,Address=$email"
+    echo "budget vrgrid-t4: gross usage (credits excluded), email $email at \$10 / \$25 / \$50 and on a \$50 forecast"
+}
+
+cost() {
+    local start end
+    start=$(date -u +%Y-%m-01); end=$(date -u -d tomorrow +%F)
+    # Cost Explorer bills $0.01 per request; this is one request.
+    "$AWS" ce get-cost-and-usage --time-period "Start=$start,End=$end" --granularity MONTHLY \
+        --metrics UnblendedCost --filter '{"Not":{"Dimensions":{"Key":"RECORD_TYPE","Values":["Credit"]}}}' \
+        --group-by Type=DIMENSION,Key=SERVICE --output text
 }
 
 stage() {
@@ -99,8 +132,8 @@ stage() {
     python "$HERE/scripts/data_status.py" > /dev/null || die "local dataset incomplete; fix before staging"
     aws_ s3 sync "$VRGRID_DATA_ROOT/poses" "s3://$bucket/dataset/poses" --only-show-errors
     case "$which" in
-        labelled) seqs=$(seq -w 0 10) ; expect=23201 ;;
-        all)      seqs=$(seq -w 0 21) ; expect=43552 ;;
+        labelled) seqs=$(seq -w 0 10) ; expect=23201 ; save disk_gb 150 ;;
+        all)      seqs=$(seq -w 0 21) ; expect=43552 ; save disk_gb 250 ;;
         *) die "stage needs 'labelled' (00-10, ~50 GB) or 'all' (00-21, ~90 GB)" ;;
     esac
     for q in $seqs; do
@@ -119,7 +152,9 @@ launch() {
         aws_ ec2 create-key-pair --key-name "$KEY_NAME" --query KeyMaterial --output text > "$KEY_PATH"
         chmod 400 "$KEY_PATH"
     fi
-    local myip vpc sg id alloc
+    local myip vpc sg id disk
+    disk=$(load disk_gb)
+    [[ -n "$disk" ]] || die "run stage first -- the disk is sized from what was staged"
     myip=$(curl -s https://checkip.amazonaws.com)
     vpc=$(aws_ ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)
     sg=$(aws_ ec2 describe-security-groups --filters "Name=group-name,Values=$SG_NAME" \
@@ -134,16 +169,20 @@ launch() {
     # for the S3 pull over SSH, so no long-lived key ever sits on the box.
     id=$(aws_ ec2 run-instances --image-id "$(ami)" --instance-type "$TYPE" \
          --key-name "$KEY_NAME" --security-group-ids "$sg" \
-         --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=$DISK_GB,VolumeType=gp3,DeleteOnTermination=true}" \
+         --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=$disk,VolumeType=gp3,DeleteOnTermination=true}" \
+         --instance-initiated-shutdown-behavior stop \
          --tag-specifications "ResourceType=instance,Tags=[{$TAGS}]" "ResourceType=volume,Tags=[{$TAGS}]" \
          --query 'Instances[0].InstanceId' --output text)
     save instance "$id"
     echo "launched $id; waiting for running"
     aws_ ec2 wait instance-running --instance-ids "$id"
-    alloc=$(aws_ ec2 allocate-address --domain vpc --tag-specifications "ResourceType=elastic-ip,Tags=[{$TAGS}]" \
-            --query AllocationId --output text)
-    aws_ ec2 associate-address --instance-id "$id" --allocation-id "$alloc" > /dev/null
-    save eip "$alloc"
+    # Idle stop: average CPU under 5% for 3 x 20 min. The action ARN needs no
+    # IAM role. A forgotten instance then costs about an idle hour, not a month.
+    aws_ cloudwatch put-metric-alarm --alarm-name "vrgrid-t4-idle-stop-$id" \
+        --namespace AWS/EC2 --metric-name CPUUtilization --dimensions "Name=InstanceId,Value=$id" \
+        --statistic Average --period 1200 --evaluation-periods 3 --threshold 5 \
+        --comparison-operator LessThanThreshold \
+        --alarm-actions "arn:aws:automate:$REGION:ec2:stop"
     aws_ ec2 wait instance-status-ok --instance-ids "$id"
     echo "ready: ssh -i $KEY_PATH ubuntu@$(ip)"
 }
@@ -184,6 +223,9 @@ EOF
 }
 
 run() {
+    # Hard stop on the box itself: whatever happens to this laptop or the SSH
+    # session, the instance powers down, and stops billing compute, in 4 h.
+    ssh_ "sudo shutdown -h +240 'vrgrid run: 4 h cap'"
     ssh_ "bash -s" <<'EOF'
 set -euo pipefail
 cd vrgrid-26 && source .venv/bin/activate && VRGRID_ASSETS=~/assets source scripts/env.sh
@@ -205,6 +247,11 @@ python scripts/frnet_eval.py --seq 08 --frames 200 --fast-scatter \
        --checkpoint ~/assets/checkpoints/frnet-finetuned-t4.pth    > results/t4/frnet_eval_finetuned.log 2>&1
 echo done
 EOF
+    # Results off the box first, then stop: compute is the part that bills by
+    # the hour, and nothing should be left running once the logs are home.
+    fetch
+    echo "run finished -- stopping the instance now"
+    aws_ ec2 stop-instances --instance-ids "$(load instance)" --output text
 }
 
 fetch() {
@@ -231,6 +278,7 @@ case "${1:-}" in
     fetch) fetch ;;
     ssh) ssh_ -t "tmux new -A -s vrgrid" ;;
     status) status ;;
+    cost) cost ;;
     stop) aws_ ec2 stop-instances --instance-ids "$(load instance)" --output text ;;
     start) aws_ ec2 start-instances --instance-ids "$(load instance)" --output text
            aws_ ec2 wait instance-running --instance-ids "$(load instance)"; status ;;
