@@ -1,0 +1,46 @@
+frame 0: range_image identical = True
+frame 1: range_image identical = True
+frame 2: range_image identical = True
+frame 3: range_image identical = True
+frame 4: range_image identical = True
+frame 5: range_image identical = True
+frame 6: range_image identical = True
+frame 7: range_image identical = False
+
+=== frame 7: 3 differing pixels of 32768 (0.0092%) ===
+
+VERDICT COUNTS
+  (a) same pixel, winner changed : 3
+  (b) a point moved pixels       : 0
+  (c) same winner, value differs : 0
+
+pixel (v=15, u=165)  cpu_idx=56230 gpu_idx=58375  -> (a) WINNER CHANGED
+    cpu range np.float32(4.1622386)   gpu range np.float32(4.0192947)
+    cpu pt 56230: xyz=(1.839728,-3.719638,-0.322378)
+        r f32=np.float32(4.1622386) f64=np.float64(4.162238747993291) delta=1.501e-07
+        bin f32=(15,165) f64=(15,165)
+    gpu pt 58375: xyz=(1.775849,-3.590631,-0.329335)
+        r f32=np.float32(4.0192947) f64=np.float64(4.0192947723959795) delta=3.363e-08
+        bin f32=(15,165) f64=(15,165)
+
+pixel (v=16, u=165)  cpu_idx=58375 gpu_idx=58376  -> (a) WINNER CHANGED
+    cpu range np.float32(4.0192947)   gpu range np.float32(4.023207)
+    cpu pt 58375: xyz=(1.775849,-3.590631,-0.329335)
+        r f32=np.float32(4.0192947) f64=np.float64(4.0192947723959795) delta=3.363e-08
+        bin f32=(15,165) f64=(15,165)
+    gpu pt 58376: xyz=(1.788513,-3.588625,-0.330431)
+        r f32=np.float32(4.023207) f64=np.float64(4.023207053157802) delta=-1.345e-07
+        bin f32=(16,165) f64=(16,165)
+
+pixel (v=39, u=468)  cpu_idx=89740 gpu_idx=89741  -> (a) WINNER CHANGED
+    cpu range np.float32(8.376147)   gpu range np.float32(8.378398)
+    cpu pt 89740: xyz=(-6.956089,4.169323,-2.095093)
+        r f32=np.float32(8.376147) f64=np.float64(8.376147395131717) delta=1.249e-07
+        bin f32=(39,467) f64=(39,467)
+    gpu pt 89741: xyz=(-6.970407,4.149322,-2.096210)
+        r f32=np.float32(8.378398) f64=np.float64(8.378397712597119) delta=-2.290e-07
+        bin f32=(39,468) f64=(39,468)
+
+=== 6 offending points, distance to nearest bin edge ===
+  azimuth   min 3.155e-05  median 3.756e-01  within 1e-6: 0
+  elevation min 5.227e-07  median 1.968e-01  within 1e-6: 2
