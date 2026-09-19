@@ -158,8 +158,21 @@ MODEL_TO_SEMANTIC = {i: i for i in range(19)}  # 0->0, 1->1, ..., 18->18
 class FRNetInference:
     """FRNet 20-class (19 semantic) semantic segmentation inference."""
 
-    def __init__(self, config_path: str | Path = _FRNET_YAML):
+    def __init__(self, config_path: str | Path = _FRNET_YAML, amp: bool = False):
+        """`amp=True` runs the forward pass under float16 autocast.
+
+        Measured on seq 08, 10 frames, an RTX 5050: p50 87.8 -> 47.7 ms and
+        p99 104.7 -> 48.5 ms, so it nearly halves the median and roughly halves
+        the TAIL, which is the number a 10 Hz claim is about. Predictions agree
+        with float32 on 99.856% of points.
+
+        It is OFF by default so that no published figure changes underneath
+        itself. Turn it on with `--semantics-precision fp16`, and quote which
+        precision produced any number that came out of it.
+        """
         import torch  # lazy: the GT-label path must import without torch
+
+        self.amp = bool(amp)
 
         with open(config_path, "r") as f:
             self.cfg = yaml.safe_load(f)
@@ -268,8 +281,15 @@ class FRNetInference:
                 [pts_tensor[0]] if pts_tensor.shape[0] == 1 else list(pts_tensor.unbind(0))
             )
 
-            # Forward pass
-            pred_list = self.model.predict(pts_list)
+            # Forward pass. autocast, not `model.half()`: autocast keeps the
+            # reductions and the softmax in float32 and casts only the layers
+            # that are safe in half, which is why the predictions still agree
+            # with float32 to 99.856% rather than drifting.
+            if self.amp and self.device.type == "cuda":
+                with torch.autocast("cuda", dtype=torch.float16):
+                    pred_list = self.model.predict(pts_list)
+            else:
+                pred_list = self.model.predict(pts_list)
             per_point_labels = pred_list[0].cpu().numpy()  # (N,)
 
         # Map from model classes (0-18 = semantic, 19 = ignore) to semantic (0-18)
