@@ -1,0 +1,64 @@
+verifying on cuda: 20,000 rows x 64 ch into 4,000 slots (28 empty)
+  scatter_max   forward  max abs diff 0.000e+00 (0.0 ulp), 0 of 254,208 values differ, empty-slot convention matches
+  scatter_mean  forward  max abs diff 2.384e-07 (2.0 ulp), 103,173 of 256,000 values differ, empty-slot convention matches
+  scatter_max   backward max abs diff 0.000e+00
+  scatter_mean  backward max abs diff 2.384e-07 (2.0 ulp on 17,013 of 20,000 rows, the same float32 rounding as the forward)
+  verified: scatter_max exact in both directions, scatter_mean within float32 rounding
+
+fast-scatter ENABLED in frustum_encoder, frnet_backbone (scatter_max) and frustum_encoder (scatter_mean)
+device cuda, holding out sequence 08
+indexing training frames:
+  sequence 00:  4541 labelled frames
+  sequence 01:  1101 labelled frames
+  sequence 02:  4661 labelled frames
+  sequence 03:   801 labelled frames
+  sequence 04:   271 labelled frames
+  sequence 05:  2761 labelled frames
+  sequence 06:  1101 labelled frames
+  sequence 07:  1101 labelled frames
+  sequence 09:  1591 labelled frames
+  sequence 10:  1201 labelled frames
+  19,130 frames over 10 sequences
+
+init from frnet-semantickitti_seg.pth: 0 missing, 8 unexpected (auxiliary heads are training-only and correctly unused)
+unfreeze=head+backbone: 9,906,964 of 10,019,252 parameters trainable (98.9%)
+class weights: 3.0x on (none), 1.0 elsewhere
+
+training 2000 steps, batch 2, lr 0.0001
+
+Traceback (most recent call last):
+  File "/home/shrestha/Desktop/sih26/vrgrid-26/scripts/frnet_finetune.py", line 341, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/home/shrestha/Desktop/sih26/vrgrid-26/scripts/frnet_finetune.py", line 278, in main
+    voxel = model(points)
+  File "/home/shrestha/Desktop/sih26/vrgrid-26/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/shrestha/Desktop/sih26/vrgrid-26/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/shrestha/Desktop/sih26/vrgrid-26/src/perception/frnet/frnet.py", line 230, in forward
+    voxel_dict = self.decode_head(voxel_dict)
+  File "/home/shrestha/Desktop/sih26/vrgrid-26/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/shrestha/Desktop/sih26/vrgrid-26/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/shrestha/Desktop/sih26/vrgrid-26/src/perception/frnet/frnet_head.py", line 56, in forward
+    map_point_feats = mlp(map_point_feats)
+  File "/home/shrestha/Desktop/sih26/vrgrid-26/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/shrestha/Desktop/sih26/vrgrid-26/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/shrestha/Desktop/sih26/vrgrid-26/.venv/lib/python3.13/site-packages/torch/nn/modules/container.py", line 253, in forward
+    input = module(input)
+  File "/home/shrestha/Desktop/sih26/vrgrid-26/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/shrestha/Desktop/sih26/vrgrid-26/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/shrestha/Desktop/sih26/vrgrid-26/.venv/lib/python3.13/site-packages/torch/nn/modules/linear.py", line 134, in forward
+    return F.linear(input, self.weight, self.bias)
+           ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 246.00 MiB. GPU 0 has a total capacity of 7.57 GiB of which 102.19 MiB is free. Including non-PyTorch memory, this process has 7.44 GiB memory in use. Of the allocated memory 7.26 GiB is allocated by PyTorch, and 68.59 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
