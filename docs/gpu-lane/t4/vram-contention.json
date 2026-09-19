@@ -11,28 +11,28 @@
  },
  "context": {
   "config": "context",
-  "pid": 960,
+  "pid": 961,
   "vram_mib_cupy_context": 104,
   "vram_mib_cupy_plus_torch_context": 122,
   "telemetry": {
    "card_mem_mib_max": 125,
    "util_pct_mean": 0.0,
-   "temp_c_max": 57,
-   "power_w_max": 28.52,
+   "temp_c_max": 52,
+   "power_w_max": 27.61,
    "throttle_reasons_or": "0x1",
    "thermal_or_hw_slowdown": false
   }
  },
  "grid": {
   "config": "grid",
-  "pid": 974,
+  "pid": 975,
   "vram_mib_after_setup": 254,
   "frame_ms": {
    "n": 200,
-   "p50": 67.87648049999007,
-   "p99": 108.5118143099856,
-   "max": 131.74331299995856,
-   "mean": 71.01544538999661
+   "p50": 67.0561770000404,
+   "p99": 125.18562892999623,
+   "max": 131.98008900008062,
+   "mean": 70.54504255001007
   },
   "grid_bytes": 10920000,
   "grid_slots": 910000,
@@ -44,22 +44,22 @@
   "vram_mib_process": 618,
   "telemetry": {
    "card_mem_mib_max": 621,
-   "util_pct_mean": 4.78125,
-   "temp_c_max": 59,
-   "power_w_max": 31.78,
+   "util_pct_mean": 4.65625,
+   "temp_c_max": 53,
+   "power_w_max": 28.99,
    "throttle_reasons_or": "0x1",
    "thermal_or_hw_slowdown": false
   }
  },
  "frnet": {
   "config": "frnet",
-  "pid": 989,
+  "pid": 990,
   "frame_ms": {
    "n": 200,
-   "p50": 147.88607450000768,
-   "p99": 156.7743182000282,
-   "max": 170.82361600000695,
-   "mean": 147.3522212550003
+   "p50": 141.82796900001904,
+   "p99": 148.18072029993345,
+   "max": 152.1073129999877,
+   "mean": 141.98643486999686
   },
   "frnet_params": 10019252,
   "frnet_weights_bytes": 40188928,
@@ -68,37 +68,37 @@
   "vram_mib_process": 4044,
   "telemetry": {
    "card_mem_mib_max": 4047,
-   "util_pct_mean": 37.25609756097561,
-   "temp_c_max": 73,
-   "power_w_max": 74.95,
+   "util_pct_mean": 36.15,
+   "temp_c_max": 67,
+   "power_w_max": 79.44,
    "throttle_reasons_or": "0x5",
    "thermal_or_hw_slowdown": false
   }
  },
  "both": {
   "config": "both",
-  "pid": 1002,
+  "pid": 1003,
   "vram_mib_after_setup": 398,
   "frame_ms": {
    "n": 200,
-   "p50": 214.32470399997783,
-   "p99": 257.81516038001706,
-   "max": 264.18830700004037,
-   "mean": 214.8378233099993
+   "p50": 205.46019749997413,
+   "p99": 234.27156804005776,
+   "max": 327.9239339999549,
+   "mean": 207.786914630002
   },
   "grid_share_ms": {
    "n": 200,
-   "p50": 64.87934599996947,
-   "p99": 101.68285449003857,
-   "max": 113.25328899999931,
-   "mean": 66.7018630199999
+   "p50": 63.86545899999874,
+   "p99": 96.31931761012986,
+   "max": 188.76506799983872,
+   "mean": 66.17010416000653
   },
   "frnet_share_ms": {
    "n": 200,
-   "p50": 148.50021600000218,
-   "p99": 156.50698953999324,
-   "max": 162.5438400000121,
-   "mean": 148.13391678000187
+   "p50": 141.27707049999572,
+   "p99": 148.92120488994124,
+   "max": 149.6948250000969,
+   "mean": 141.61493292999694
   },
   "grid_bytes": 10920000,
   "grid_slots": 910000,
@@ -114,9 +114,9 @@
   "vram_mib_process": 4600,
   "telemetry": {
    "card_mem_mib_max": 4603,
-   "util_pct_mean": 30.51923076923077,
-   "temp_c_max": 82,
-   "power_w_max": 104.64,
+   "util_pct_mean": 29.80392156862745,
+   "temp_c_max": 77,
+   "power_w_max": 111.37,
    "throttle_reasons_or": "0x5",
    "thermal_or_hw_slowdown": false
   }
@@ -124,14 +124,14 @@
  "pair": {
   "grid": {
    "config": "grid",
-   "pid": 1020,
+   "pid": 1021,
    "vram_mib_after_setup": 254,
    "frame_ms": {
-    "n": 328,
-    "p50": 118.33679250000273,
-    "p99": 172.61337551996803,
-    "max": 182.6015099999836,
-    "mean": 122.25536916158644
+    "n": 333,
+    "p50": 112.43242899990946,
+    "p99": 177.10846675995526,
+    "max": 212.68033000001196,
+    "mean": 120.42297620420361
    },
    "grid_bytes": 10920000,
    "grid_slots": 910000,
@@ -144,13 +144,13 @@
   },
   "frnet": {
    "config": "frnet",
-   "pid": 1021,
+   "pid": 1022,
    "frame_ms": {
-    "n": 228,
-    "p50": 175.20832399998199,
-    "p99": 195.21608776999187,
-    "max": 206.27372199999172,
-    "mean": 175.61666680263005
+    "n": 226,
+    "p50": 177.5048050000123,
+    "p99": 194.9905007499524,
+    "max": 199.55177199994978,
+    "mean": 177.7257928672498
    },
    "frnet_params": 10019252,
    "frnet_weights_bytes": 40188928,
@@ -160,9 +160,9 @@
   },
   "telemetry": {
    "card_mem_mib_max": 4713,
-   "util_pct_mean": 38.614583333333336,
-   "temp_c_max": 78,
-   "power_w_max": 77.49,
+   "util_pct_mean": 39.4375,
+   "temp_c_max": 81,
+   "power_w_max": 82.2,
    "throttle_reasons_or": "0x5",
    "thermal_or_hw_slowdown": false
   }

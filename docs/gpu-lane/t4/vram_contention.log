@@ -21,19 +21,19 @@ Tesla T4, 580.159.04, 15360 MiB, 3 MiB | CUDA runtime 12090 | cupy 14.0.1 | torc
   Whole card, pair run peak         -                               4713 MiB of 15360 MiB        nvidia-smi memory.used, 1 s       
 
 === Contention (03-CUDA-PORT-PLAN.md §6), seq 08, ms per frame ===
-  grid alone                         p50   67.88  p99  108.51  max  131.74  n   200
-  FRNet alone                        p50  147.89  p99  156.77  max  170.82  n   200
-  both, one loop: whole frame        p50  214.32  p99  257.82  max  264.19  n   200
-  both, one loop: grid share         p50   64.88  p99  101.68  max  113.25  n   200
-  both, one loop: FRNet share        p50  148.50  p99  156.51  max  162.54  n   200
-  pair, two processes: grid          p50  118.34  p99  172.61  max  182.60  n   328
-  pair, two processes: FRNet         p50  175.21  p99  195.22  max  206.27  n   228
+  grid alone                         p50   67.06  p99  125.19  max  131.98  n   200
+  FRNet alone                        p50  141.83  p99  148.18  max  152.11  n   200
+  both, one loop: whole frame        p50  205.46  p99  234.27  max  327.92  n   200
+  both, one loop: grid share         p50   63.87  p99   96.32  max  188.77  n   200
+  both, one loop: FRNet share        p50  141.28  p99  148.92  max  149.69  n   200
+  pair, two processes: grid          p50  112.43  p99  177.11  max  212.68  n   333
+  pair, two processes: FRNet         p50  177.50  p99  194.99  max  199.55  n   226
 
-  sum of the parts, p50             215.76   one loop measures 214.32 (-0.7%)
-  grid  under contention (pair): p50 +74.3%, p99 +59.1%
-  frnet under contention (pair): p50 +18.5%, p99 +24.5%
+  sum of the parts, p50             208.88   one loop measures 205.46 (-1.6%)
+  grid  under contention (pair): p50 +67.7%, p99 +41.5%
+  frnet under contention (pair): p50 +25.2%, p99 +31.6%
   10 Hz at p99: grid alone MISSES, one loop MISSES, pair grid MISSES
 
-  telemetry: grid 59 C max, 31.78 W max, util 5%, throttle 0x1, thermal/hw slowdown False; frnet 73 C max, 74.95 W max, util 37%, throttle 0x5, thermal/hw slowdown False; both 82 C max, 104.64 W max, util 31%, throttle 0x5, thermal/hw slowdown False; pair 78 C max, 77.49 W max, util 39%, throttle 0x5, thermal/hw slowdown False
+  telemetry: grid 53 C max, 28.99 W max, util 5%, throttle 0x1, thermal/hw slowdown False; frnet 67 C max, 79.44 W max, util 36%, throttle 0x5, thermal/hw slowdown False; both 77 C max, 111.37 W max, util 30%, throttle 0x5, thermal/hw slowdown False; pair 81 C max, 82.2 W max, util 39%, throttle 0x5, thermal/hw slowdown False
 
 wrote /kaggle/working/t4/vram-contention.json

@@ -118,14 +118,59 @@ and it would match what the kernel already does.
 **That is JP's file, and his call.** The device half needs no change and must
 not be "fixed" to match a host that is itself unstable.
 
-## What to claim until then
+## Resolved
 
-The determinism guarantee holds **on a single machine**: same input, same
-machine, same bits, run to run. That is what `make test-determinism` checks and
-it is unaffected.
+Both halves fixed, and the T4 now passes:
 
-What does not hold is bitwise reproducibility **across host environments**, and
-the honest statement of the cause is that it is numpy's float32 `arcsin`, not
-the CUDA kernels. Three pixels in 131,072 over eight frames is small, and it
-still reaches `inverse_index` and therefore reflectivity and everything
-downstream of it.
+    sequence 08, frames 0..199 (200), schedule 5/10/20/40
+    IDENTICAL on all 200 frames: range image, inverse index, reflectivity,
+    labels, motion, counters, map hash
+
+The elevation fix alone took frame 7 from three differing pixels to one. The
+survivor was the azimuth axis, which the first pass had deliberately left
+alone because none of the six original points was near a column edge -- true
+at the time, and no longer true once the elevation points were removed from
+the picture. The one that remained, point 89740, sits 3.155e-05 of a bin from
+a column edge, about 1.6 float32 ULP.
+
+Columns now go through float64 in all three places that compute them:
+`perception/range_image.py`, `gpu/cuda_kernels.py::project_keys`, and
+`gpu/visibility.py::spherical_project`, which was already float64 and is what
+the other two had to agree with. Rounding the host's azimuth to float32 was
+tried first and broke `test_columns_match_jp_projection` -- that test was
+right and the change was wrong.
+
+### The map is bit-identical across machines
+
+Stronger than parity, which only compares host against device on one box. The
+same 200 frames, run on two machines that share no hardware and no numpy:
+
+    Kaggle   Xeon @ 2.00 GHz, Tesla T4,  numpy 2.0.2, driver 580.159.04
+    laptop   i7-14650HX,      RTX 5050,  numpy 2.5.3, driver 610.57.04
+
+    final map hash   2af93787e6c1c46d237669fc85b3ffdb   BOTH
+    cells cleared    7,648,849                          BOTH
+
+Different CPU, different GPU, different numpy, different driver, same bits
+after 200 frames of fusion, split/merge and visibility cleanup.
+
+The fix moved no result on either machine: the laptop's 60-frame hash was
+`55c47b58cd3ab52de12991fcbd77df76` before and after. It made the existing
+answer portable rather than producing a new one.
+
+## What can be claimed now
+
+Determinism holds on a single machine -- same input, same machine, same bits,
+run to run -- and that is what `make test-determinism` pins.
+
+**Bitwise reproducibility across machines now holds too**, measured on seq 08,
+200 frames, across two CPUs, two GPUs, two numpy versions and two drivers. It
+did not hold before 67473fd, and the honest history is worth keeping: it failed
+because of numpy's float32 `arcsin` and a float32 column bin, not because of
+anything in the CUDA kernels, and it was only ever visible from a second
+machine.
+
+The remaining float32 in this path is the stored range value itself, which is
+what the range image is declared to hold. Only the ANGLES and the BIN INDICES
+were moved to float64 -- the quantities where an ULP changes which cell a
+point belongs to rather than what is written in it.

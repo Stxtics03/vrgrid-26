@@ -7,22 +7,22 @@ sequence 08, 200 frames, schedule 5/10/20/40, 910,000 slots, device cpu
 
 stage           p50 ms   p99 ms   max ms   share   x10Hz
 --------------------------------------------------------
-load             43.54   144.96   193.67    17%    0.7x
-transform         3.47     7.11     7.55     1%   14.1x
-range_image      53.58    77.05    80.32    21%    1.3x
-semantics         1.26     2.21     2.30     0%   45.2x
-motion            0.17     0.25     0.27     0%  395.1x
-ground           42.10    62.62    68.25    16%    1.6x
-reflectivity      8.21    10.49    10.65     3%    9.5x
-bin              36.74    42.75    42.87    14%    2.3x
-scatter          13.28    16.94    18.08     5%    5.9x
-fuse              7.95     9.65    10.45     3%   10.4x
-cleanup          48.53    58.31    58.80    19%    1.7x
-shift             1.23     8.94     9.00     0%   11.2x
+load             26.48    60.04    69.95    11%    1.7x
+transform         3.46     6.98     7.74     1%   14.3x
+range_image      54.86    67.17    73.36    22%    1.5x
+semantics         1.27     2.64     5.78     1%   37.8x
+motion            0.17     0.22     0.22     0%  458.1x
+ground           41.90    52.60    56.95    17%    1.9x
+reflectivity      8.16    10.46    11.39     3%    9.6x
+bin              36.20    41.66    41.68    15%    2.4x
+scatter          13.18    14.98    16.79     5%    6.7x
+fuse              7.83     9.65     9.76     3%   10.4x
+cleanup          47.87    56.17    59.01    19%    1.8x
+shift             1.20     8.95     9.09     0%   11.2x
 --------------------------------------------------------
-FRAME           261.02   369.22   416.92   100%    0.3x
+FRAME           246.01   271.42   304.05   100%    0.4x
 
-3.8 FPS p50 (0.4x), 2.7 FPS p99 (0.3x) against the 100 ms budget at 10 Hz
+4.1 FPS p50 (0.4x), 3.7 FPS p99 (0.4x) against the 100 ms budget at 10 Hz
 MISSES 10 Hz at p99
 
 split_merge is absent because it has no per-frame batch entry point; it is

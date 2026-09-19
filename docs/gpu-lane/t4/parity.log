@@ -1,2 +1,15 @@
 PatchWorkpp::PatchWorkpp() - INITIALIZATION COMPLETE
-MISMATCH at frame 7: perception output `range_image` differs
+  frame 24: identical -- perception and map; 316,182 occupied, 19,606 cleared, hash 82cf13da79a18a91d6da56f9f76a3cc9
+  frame 49: identical -- perception and map; 332,030 occupied, 44,397 cleared, hash 58841ef8d96d775dbe62ec9935919c8a
+  frame 74: identical -- perception and map; 357,291 occupied, 52,546 cleared, hash 0fb70ea702a17e16d399f443ee995d6f
+  frame 99: identical -- perception and map; 350,824 occupied, 64,779 cleared, hash 4eabb97080b80e6fdb31d9d8c8eaaf35
+  frame 124: identical -- perception and map; 300,116 occupied, 35,180 cleared, hash 3b7ed176d858ec764f0dc8de5038408c
+  frame 149: identical -- perception and map; 281,421 occupied, 34,764 cleared, hash 864a9c65be11db145ccd066b8abdc509
+  frame 174: identical -- perception and map; 284,306 occupied, 24,170 cleared, hash 17686dc07e86fd0a7162c5d94081621d
+  frame 199: identical -- perception and map; 287,720 occupied, 42,614 cleared, hash 2af93787e6c1c46d237669fc85b3ffdb
+
+sequence 08, frames 0..199 (200), schedule 5/10/20/40, ground patchworkpp, ghost removal ON
+IDENTICAL on all 200 frames: range image, inverse index, reflectivity, labels, motion, counters, map hash
+final map hash 2af93787e6c1c46d237669fc85b3ffdb; 7,648,849 cells cleared by §10.4
+stage attrition over the run (identical on both devices, every frame): capped 0.00%, outside_map 0.00%, nonground 36.65%, ground_out_of_band 0.18%, ground_fused 63.17%; beside the chain: moving 1.94%, projected 20.92%
+device: 134.97 MB map + buffers, pool used 145.08 MB, reserved 385.84 MB
