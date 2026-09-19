@@ -221,7 +221,7 @@ class DevicePerception:
         with stage("range_image"):
             self.pts[:4 * n].set(points.reshape(-1))
             self.world[:3 * n].set(np.ascontiguousarray(points_world, np.float64).reshape(-1))
-            K.project_keys()(self.pts, 4, np.float32(np.pi), np.float32(self.d_theta),
+            K.project_keys()(self.pts, 4, np.float64(np.pi), np.float64(self.d_theta),
                              self.phi_max, self.d_phi, self.h, self.w,
                              self.key[:n], self.fov[:n])
             self.key[:n].sort()

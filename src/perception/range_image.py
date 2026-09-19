@@ -141,19 +141,21 @@ def project(
     # ("atan2/asin in double then round to float32", src/gpu/CLAUDE.md), so the
     # host and device now agree by construction instead of by luck.
     # See docs/gpu-lane/12-PARITY-FRAME7.md.
-    # AZIMUTH IS DELIBERATELY UNCHANGED. It was converted to float64 too, and
-    # that breaks `test_columns_match_jp_projection` -- gpu/visibility.py's
-    # `spherical_project` gathers out of this image and the test pins its
-    # columns to these. The evidence never asked for it either: of the six
-    # points that diverged at frame 7, the nearest was 3.2e-05 from an azimuth
-    # bin edge and none within 1e-6, while two were within 5.2e-07 of an
-    # ELEVATION edge. Fix what the data shows, not what looks symmetric.
-    azimuth = np.arctan2(xyz[:, 1], xyz[:, 0])
+    # float64 and STAYS float64 through the column arithmetic below. Rounding
+    # it to float32 was tried and breaks `test_columns_match_jp_projection`:
+    # gpu/visibility.py's `spherical_project` gathers out of this image, its
+    # scratch is float64, and it bins columns in float64 -- so float64 is the
+    # value the two already have to agree on.
+    azimuth = np.arctan2(xyz[:, 1].astype(np.float64),
+                         xyz[:, 0].astype(np.float64))
     z_over_r = np.divide(xyz[:, 2], r, out=np.zeros_like(r), where=finite)
     elevation = np.arcsin(
         np.clip(z_over_r.astype(np.float64), -1.0, 1.0)).astype(np.float32)
 
-    # azimuth wraps -- every point has a valid column
+    # azimuth wraps -- every point has a valid column. float64, matching
+    # project_keys and spherical_project: seq 08 frame 7 point 89740 sits
+    # 3.2e-05 of a bin (~1.6 float32 ULP) from a column edge, and in float32
+    # it lands in column 467 on one host and 468 on another.
     u = np.floor((azimuth + np.pi) / d_theta).astype(np.int64) % w
 
     # elevation -- row 0 = phi_max (top). Clamp to the edge ring, count how many

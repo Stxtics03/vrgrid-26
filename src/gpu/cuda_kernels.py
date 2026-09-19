@@ -95,7 +95,7 @@ KEY_NONE = np.uint64(0xFFFFFFFFFFFFFFFF)
 def project_keys():
     """`range_image.project`'s per-point arithmetic. float32 points only."""
     return _kernel("project_keys",
-        "raw float32 pts, int64 ncols, float32 pi_f, float32 d_theta_f, "
+        "raw float32 pts, int64 ncols, float64 pi_d, float64 d_theta, "
         "float64 phi_max, float64 d_phi, int64 h, int64 w",
         "uint64 key, int8 fov",
         r"""
@@ -106,13 +106,18 @@ def project_keys():
         key = 0xFFFFFFFFFFFFFFFFull;
         fov = 0;
         if (r > 1e-6f) {
-            float az = (float)atan2((double)y, (double)x);
+            // Azimuth stays DOUBLE all the way into floor(). It used to round
+            // to float32 here, and seq 08 frame 7 point 89740 sits 3.2e-05 of a
+            // bin -- about 1.6 float32 ULP -- from a column edge, close enough
+            // that the host and this kernel chose different columns.
+            // perception/range_image.py and gpu/visibility.py both bin columns
+            // in float64; this is the odd one out, and now it is not.
+            double az = atan2((double)y, (double)x);
             float zr = z / r;
             if (zr < -1.0f) zr = -1.0f;
             if (zr > 1.0f) zr = 1.0f;
             float el = (float)asin((double)zr);
-            float t = az + pi_f;
-            t = t / d_theta_f;
+            double t = (az + pi_d) / d_theta;
             long long u = (long long)floor(t);
             u = ((u % w) + w) % w;
             // Double, deliberately, and do NOT "fix" this to float32 to match
