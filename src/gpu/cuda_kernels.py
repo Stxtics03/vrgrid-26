@@ -115,6 +115,14 @@ def project_keys():
             t = t / d_theta_f;
             long long u = (long long)floor(t);
             u = ((u % w) + w) % w;
+            // Double, deliberately, and do NOT "fix" this to float32 to match
+            // the host's dtype. It was tried: numpy's binning here is float32,
+            // so float32 looks like the matching choice, and it fails parity on
+            // this laptop at frame 4 -- worse than the double version, which
+            // passes 200/200 here. The host's float32 `arcsin` is not the same
+            // function as this kernel's double `asin` rounded to float32, and
+            // the double subtraction is what currently absorbs that difference.
+            // See docs/gpu-lane/12-PARITY-FRAME7.md.
             double vt = phi_max - (double)el;
             vt = vt / d_phi;
             long long v = (long long)floor(vt);

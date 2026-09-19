@@ -64,26 +64,68 @@ libdevice's transcendentals are not bit-identical across architectures. The
 laptop agreement was a property of that machine, not of the code -- which is
 exactly what running parity on a second card was for.
 
+## Which side moved: not the GPU
+
+`scripts/kaggle/elprobe.py` computes the elevation of the five points involved
+two ways -- numpy's float32 `arcsin`, and `asin` in double rounded to float32,
+which is what `project_keys` does -- and was run on both machines.
+
+    point 58375                 laptop (numpy 2.5.3)      Kaggle Xeon (numpy 2.0.2)
+    numpy float32 arcsin    -0.082030467689037323      -0.08203047513961792
+    double asin -> float32  -0.082030467689037323      -0.082030467689037323
+    resulting row                             15                            16
+
+**The kernel's value is bit-identical on both machines. numpy's is not.** The
+CUDA path is the stable one; the host path changed underneath it, and the
+parity test -- which compares host against device on one machine -- reported
+that as the device disagreeing.
+
+The two hosts differ in both numpy version (2.5.3 against 2.0.2) and CPU
+(i7-14650HX against a Xeon @ 2.00 GHz), and this experiment does not separate
+those. It does not need to: either way the float32 transcendental is the part
+that is not portable, and the double-then-round is.
+
+That also explains the kernel's own documented rule, "atan2/asin in double then
+round to float32", listed in `src/gpu/CLAUDE.md` as one of three traps. It is
+not a workaround for the GPU being awkward. It is the numerically stable
+choice, and the host is the side that has not adopted it.
+
+## A device-side fix was tried, and it is wrong
+
+The obvious reading of the above is that the device should match the host's
+float32 binning, since `(phi_max - elevation) / d_phi` is float32 in numpy
+(confirmed: float32 in, float32 out, under numpy 2.x weak promotion). It was
+implemented -- `float vt = ((float)phi_max - el) / (float)d_phi` -- and it
+**fails parity on the laptop at frame 4**, worse than the double version it
+replaced, which passes 200/200 there. Reverted, with the reason recorded in
+the kernel so it is not retried.
+
+The reason it fails is the line above: the host's float32 `arcsin` is not the
+same function as this kernel's double `asin` rounded to float32. The double
+subtraction is currently what absorbs that difference. Narrowing it exposes
+the difference instead.
+
+There is no device-only fix. The device is already doing the stable thing.
+
 ## The fix, and who owns it
 
-Do the angle-to-bin arithmetic in **float64 on both paths**, so a float32 ULP
-cannot flip a row:
+`src/perception/range_image.py` should compute elevation and the row index in
+**float64**: promote `xyz` before `arctan2`/`arcsin`, or at minimum compute
+`elevation` in float64 and keep the bin arithmetic there. float64
+transcendentals are far less likely to differ across numpy builds and CPUs,
+and it would match what the kernel already does.
 
-- `src/gpu/cuda_kernels.py` (`project_keys`) -- stop narrowing: keep `az` and
-  `el` as `double`, and do the azimuth division in double as the elevation
-  division already is. **Shrestha's file.**
-- `src/perception/range_image.py` -- promote `xyz` to float64 before
-  `arctan2`/`arcsin`, or compute `u`/`v` in float64 explicitly. **JP's file --
-  his call, not a unilateral edit.**
-
-This does not make a point exactly on a boundary well-defined; that is
-measure-zero and unfixable. It removes the ULP-scale wobble that currently
-decides it differently on different hardware.
+**That is JP's file, and his call.** The device half needs no change and must
+not be "fixed" to match a host that is itself unstable.
 
 ## What to claim until then
 
 The determinism guarantee holds **on a single machine**: same input, same
-machine, same bits, run to run. The cross-card claim does not currently hold
-and should not be written as though it does. Three pixels in 131,072 over
-eight frames is small, and it is still a real divergence that reaches
-`inverse_index` and therefore reflectivity and everything downstream of it.
+machine, same bits, run to run. That is what `make test-determinism` checks and
+it is unaffected.
+
+What does not hold is bitwise reproducibility **across host environments**, and
+the honest statement of the cause is that it is numpy's float32 `arcsin`, not
+the CUDA kernels. Three pixels in 131,072 over eight frames is small, and it
+still reaches `inverse_index` and therefore reflectivity and everything
+downstream of it.
