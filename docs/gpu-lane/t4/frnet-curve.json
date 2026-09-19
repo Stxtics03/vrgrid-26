@@ -1,0 +1,18 @@
+{
+  "kernel": "shrestha1778/vrgrid-frnet-curve",
+  "hardware": "Kaggle Tesla T4 15.6 GB, driver 580.159.04",
+  "repo_commit": "81843cc",
+  "runtime_s": 17216.3,
+  "config": "--unfreeze head+backbone --lr 1e-4 --weight-classes ''",
+  "eval": "seq 08, 200 frames, frnet_eval.py --fast-scatter",
+  "segment_steps": 4000,
+  "baseline": {"steps": 0, "acc": 90.3, "miou": 65.2, "drivable": 61.1},
+  "curve": [
+    {"steps": 4000,  "acc": 90.8, "miou": 65.2, "drivable": 61.5},
+    {"steps": 8000,  "acc": 90.9, "miou": 64.9, "drivable": 61.5},
+    {"steps": 12000, "acc": 90.8, "miou": 64.7, "drivable": 61.3},
+    {"steps": 16000, "acc": 90.3, "miou": 64.4, "drivable": 60.9},
+    {"steps": 20000, "acc": 90.5, "miou": 64.5, "drivable": 61.2}
+  ],
+  "conclusion": "mIoU peaks at 4000 steps and declines thereafter; the checkpoint is at its ceiling and further training degrades it"
+}
