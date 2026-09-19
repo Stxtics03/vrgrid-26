@@ -70,8 +70,11 @@ preflight() {
     q=$("$AWS" --region "$REGION" service-quotas get-service-quota --service-code ec2 \
         --quota-code L-DB2E81BA --query 'Quota.Value' --output text 2>/dev/null || echo "unknown")
     echo "G/VT on-demand vCPU quota: $q (g4dn.xlarge needs 4)"
+    # Hard stop, not a warning: an EC2 DryRun checks permissions, NOT the vCPU
+    # quota, so a 0 quota sails through `dryrun` and only fails at `launch` --
+    # which is after `stage` has spent hours uploading 54 GB.
     [[ "$q" == "unknown" ]] || awk "BEGIN{exit !($q >= 4)}" || \
-        echo "!! quota below 4 -- request an increase in Service Quotas before launch"
+        die "G/VT vCPU quota is $q, $TYPE needs 4 -- request an increase in Service Quotas and wait for it"
     echo "AMI: $(ami)"
     echo "public IP of this machine: $(curl -s https://checkip.amazonaws.com)"
 }
@@ -274,9 +277,14 @@ EOF
 }
 
 fetch() {
-    mkdir -p "$HERE/docs/gpu-lane/t4"
-    scp -i "$KEY_PATH" "ubuntu@$(ip):vrgrid-26/results/t4/*.{log,json}" "$HERE/docs/gpu-lane/t4/"
-    ls -la "$HERE/docs/gpu-lane/t4"
+    local out="$HERE/docs/gpu-lane/t4"
+    mkdir -p "$out"
+    # NOT scp: from OpenSSH 9 on, scp speaks SFTP, and SFTP globbing has no
+    # brace expansion -- `*.{log,json}` matches nothing and the fetch comes
+    # back empty, after the run, with the instance about to be stopped. tar
+    # over ssh has no globbing question at all and is one round trip.
+    ssh_ "tar -cf - -C vrgrid-26/results t4" | tar -xf - -C "$(dirname "$out")"
+    ls -la "$out"
 }
 
 status() {
