@@ -128,9 +128,30 @@ def project(
     finite = r > 1e-6
     n_zero_range = int((~finite).sum())
 
+    # The transcendentals go through float64 and are then rounded to float32,
+    # rather than calling numpy's float32 arctan2/arcsin directly. numpy's
+    # float32 versions are SIMD-dispatched and are NOT portable: on seq 08
+    # frame 7, point 58375's elevation is -0.082030467689037323 under numpy
+    # 2.5.3 on an i7-14650HX and -0.08203047513961792 under numpy 2.0.2 on a
+    # Xeon. That is a whole row apart after floor(), and it is what made
+    # gpu_parity fail at frame 7 on a rented T4 while passing on the laptop.
+    # The float64 value is bit-identical on both machines.
+    #
+    # This mirrors what gpu/cuda_kernels.py::project_keys has always done
+    # ("atan2/asin in double then round to float32", src/gpu/CLAUDE.md), so the
+    # host and device now agree by construction instead of by luck.
+    # See docs/gpu-lane/12-PARITY-FRAME7.md.
+    # AZIMUTH IS DELIBERATELY UNCHANGED. It was converted to float64 too, and
+    # that breaks `test_columns_match_jp_projection` -- gpu/visibility.py's
+    # `spherical_project` gathers out of this image and the test pins its
+    # columns to these. The evidence never asked for it either: of the six
+    # points that diverged at frame 7, the nearest was 3.2e-05 from an azimuth
+    # bin edge and none within 1e-6, while two were within 5.2e-07 of an
+    # ELEVATION edge. Fix what the data shows, not what looks symmetric.
     azimuth = np.arctan2(xyz[:, 1], xyz[:, 0])
     z_over_r = np.divide(xyz[:, 2], r, out=np.zeros_like(r), where=finite)
-    elevation = np.arcsin(np.clip(z_over_r, -1.0, 1.0))
+    elevation = np.arcsin(
+        np.clip(z_over_r.astype(np.float64), -1.0, 1.0)).astype(np.float32)
 
     # azimuth wraps -- every point has a valid column
     u = np.floor((azimuth + np.pi) / d_theta).astype(np.int64) % w
@@ -138,7 +159,11 @@ def project(
     # elevation -- row 0 = phi_max (top). Clamp to the edge ring, count how many
     # were out of FOV. "above" = above phi_max (elevation too high, row < 0);
     # "below" = below phi_min (row >= h).
-    v_raw = np.floor((phi_max - elevation) / d_phi).astype(np.int64)
+    # float64, matching project_keys' `double vt`: this is the subtraction where
+    # a point 5e-7 from a row boundary changes rows if it is done in float32.
+    v_raw = np.floor(
+        (np.float64(phi_max) - elevation.astype(np.float64)) / np.float64(d_phi)
+    ).astype(np.int64)
     n_clamped_above = int((finite & (v_raw < 0)).sum())
     n_clamped_below = int((finite & (v_raw >= h)).sum())
     v = np.clip(v_raw, 0, h - 1)
