@@ -223,6 +223,41 @@ def project_with_inverse(points: np.ndarray, sensor_cfg: dict | None = None):
     return project(points, sensor_cfg)
 
 
+def point_bins(points: np.ndarray, sensor_cfg: dict | None = None):
+    """Per-point image bin `(v, u)`, clamped to the image, plus the FOV mask.
+
+    `project()` returns the inverse index, which is pixel -> point and so names
+    only the ~27% of returns that win a pixel. This names the bin of EVERY
+    point, which is what a caller gathering out of a per-pixel array needs.
+
+    ⚑ It re-derives `u` and `v` with the same arithmetic as `project()`, and
+      that duplication is the hazard here, not the cost. `src/gpu/CLAUDE.md`
+      records `spherical_project` running the azimuth axis backwards for three
+      days because a second projection existed; `test_point_bins_match_project`
+      pins this one to `project()` so the pair cannot drift.
+    """
+    if sensor_cfg is None:
+        sensor_cfg = load_sensor_config()
+    h = sensor_cfg["num_rings"]
+    w = sensor_cfg["num_azimuth"]
+    d_theta, d_phi = bin_widths(sensor_cfg)
+    phi_max = np.deg2rad(sensor_cfg["phi_max_deg"])
+
+    xyz = np.asarray(points)[:, :3]
+    r = np.linalg.norm(xyz, axis=1)
+    finite = r > 1e-6
+    azimuth = np.arctan2(xyz[:, 1].astype(np.float64),
+                         xyz[:, 0].astype(np.float64))
+    z_over_r = np.divide(xyz[:, 2], r, out=np.zeros_like(r), where=finite)
+    elevation = np.arcsin(
+        np.clip(z_over_r.astype(np.float64), -1.0, 1.0)).astype(np.float32)
+    u = np.floor((azimuth + np.pi) / d_theta).astype(np.int64) % w
+    v_raw = np.floor(
+        (np.float64(phi_max) - elevation.astype(np.float64)) / np.float64(d_phi)
+    ).astype(np.int64)
+    return np.clip(v_raw, 0, h - 1), u, finite
+
+
 def range_image_to_frnet_input(range_image: np.ndarray) -> np.ndarray:
     """
     Convert range image to FRNet input format.

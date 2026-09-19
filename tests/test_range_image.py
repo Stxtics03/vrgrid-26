@@ -215,3 +215,41 @@ def test_sensor_config_is_parsed_once_and_copied_per_caller():
     b = range_image.load_sensor_config()
     assert b["num_rings"] != -1
     assert range_image._parse_sensor_config.cache_info().misses == 1
+
+
+def test_point_bins_match_project():
+    """`point_bins` must name the same pixel `project` put the point in.
+
+    The two compute `(v, u)` separately -- `project` to build the image,
+    `point_bins` to let a caller gather out of a per-pixel array for points
+    that never won a pixel. Two projections in one system is what
+    `docs/frames.md` exists to prevent, and `src/gpu/CLAUDE.md` records
+    `spherical_project` running the azimuth axis backwards for three days
+    because a second one existed. This is the pin.
+    """
+    import numpy as np
+    from vrgrid.perception import range_image as ri
+
+    rng = np.random.default_rng(0)
+    pts = np.empty((20000, 4), np.float32)
+    # A shell rather than a cube: the interesting bins are the ones a real
+    # sweep reaches, and a uniform cube puts most points near the diagonal.
+    theta = rng.uniform(-np.pi, np.pi, len(pts))
+    phi = rng.uniform(np.deg2rad(-24.8), np.deg2rad(2.0), len(pts))
+    rad = rng.uniform(1.0, 80.0, len(pts))
+    pts[:, 0] = rad * np.cos(phi) * np.cos(theta)
+    pts[:, 1] = rad * np.cos(phi) * np.sin(theta)
+    pts[:, 2] = rad * np.sin(phi)
+    pts[:, 3] = 1.0
+
+    _, inverse = ri.project(pts)
+    v, u, finite = ri.point_bins(pts)
+
+    won = inverse >= 0
+    vv, uu = np.nonzero(won)
+    idx = inverse[vv, uu]
+    assert len(idx) > 1000, "degenerate fixture: almost nothing projected"
+    # Every point that WON a pixel must be binned back to that same pixel.
+    assert np.array_equal(v[idx], vv)
+    assert np.array_equal(u[idx], uu)
+    assert finite[idx].all()

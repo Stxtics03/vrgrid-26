@@ -60,7 +60,7 @@ class PerceptionFrame:
 
 def iter_pipeline(seq: str, max_frames: int | None, use_patchworkpp: bool = True,
                   timer=None, start_frame: int = 0, device: str = "cpu",
-                  semantic_source: str = "gt"):
+                  semantic_source: str = "gt", semantic_every: int = 1):
     """Yield a PerceptionFrame per scan of `seq`.
 
     `start_frame` skips ahead before the first yield (default 0, so existing
@@ -109,6 +109,9 @@ def iter_pipeline(seq: str, max_frames: int | None, use_patchworkpp: bool = True
                 "--semantics gt on the card.")
         from vrgrid.perception import semantics as _sem
         frnet = _sem.FRNetInference()
+    # One entry, rebound on every inference frame: the last per-PIXEL label
+    # image. `--semantics-every N` gathers out of it on the N-1 frames between.
+    label_cache = {"image": None}
     # A fresh Patchwork++ estimator per run: it adapts from past scans, so a
     # shared one made a second run in the same process map differently (see
     # `ground.reset_estimator`). Runs here, at the first frame's pull.
@@ -128,12 +131,15 @@ def iter_pipeline(seq: str, max_frames: int | None, use_patchworkpp: bool = True
         points, raw_labels, pose = item
         yield perceive(points, raw_labels, pose, seq, start_frame + i,
                        use_patchworkpp=use_patchworkpp, timer=timer,
-                       perception=perception, frnet=frnet)
+                       perception=perception, frnet=frnet,
+                       frnet_every=semantic_every,
+                       label_cache=label_cache if frnet is not None else None)
         i += 1
 
 
 def perceive(points, raw_labels, pose, seq: str, index: int, use_patchworkpp=True,
-             timer=None, perception=None, ground_result=None, frnet=None):
+             timer=None, perception=None, ground_result=None, frnet=None,
+             frnet_every: int = 1, label_cache=None):
     """Every perception stage for one scan, on the host or on the card.
 
     `perception` is a `gpu.device.DevicePerception` for the device path, None
@@ -182,7 +188,22 @@ def perceive(points, raw_labels, pose, seq: str, index: int, use_patchworkpp=Tru
     with stage("range_image"):
         ri, inv = range_image.project(points)
     with stage("semantics"):
-        if frnet is not None:
+        if frnet is not None and label_cache is not None and frnet_every > 1 \
+                and index % frnet_every and label_cache["image"] is not None:
+            # A SKIPPED frame. FRNet costs ~88 ms and the whole 10 Hz budget is
+            # 100 ms, so running it every frame puts the pipeline at 7.6 FPS.
+            # Semantic class is a property of the SCENE, and at 10 Hz the scene
+            # barely moves between frames, so the previous inference is reused
+            # by looking each point up in the image bin it falls in.
+            #
+            # This is an approximation and it is not free: the ego moves ~1 m
+            # between frames, which is angularly small at range and is not
+            # small up close. `scripts/semantics_rate.py` measures what it
+            # costs in accuracy against what it buys in latency -- quote the
+            # pair, never the latency alone.
+            v, u, _ = range_image.point_bins(points)
+            semantic = label_cache["image"][v, u]
+        elif frnet is not None:
             # The model decides the class. This is the configuration the
             # problem statement asks for -- a deep-learning pipeline whose
             # segmentation feeds the map -- and it is NOT the one the
@@ -191,6 +212,18 @@ def perceive(points, raw_labels, pose, seq: str, index: int, use_patchworkpp=Tru
             # segmentation quality. Both are real; say which one produced
             # any figure that is quoted.
             semantic = frnet.infer_points(points)
+            if label_cache is not None:
+                # Scatter this frame's per-point answer into a per-pixel image.
+                # Later writers win, which matches `project`'s own convention of
+                # the nearest return owning the pixel closely enough for a
+                # label that is about to be re-inferred in a few frames.
+                v, u, _ = range_image.point_bins(points)
+                img = np.full(range_image.load_sensor_config()["num_rings"]
+                              * range_image.load_sensor_config()["num_azimuth"],
+                              -1, np.int32).reshape(
+                                  range_image.load_sensor_config()["num_rings"], -1)
+                img[v, u] = semantic
+                label_cache["image"] = img
         else:
             semantic = semantics.semantic_labels(raw_labels)
     with stage("motion"):
@@ -250,6 +283,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "'frnet' runs the model and feeds ITS predictions to "
                         "the map, which is the end-to-end deep-learning "
                         "pipeline the problem statement asks for. CPU only.")
+    p.add_argument("--semantics-every", type=int, default=1, metavar="N",
+                   help="run FRNet on every Nth frame and reuse its labels in "
+                        "between, gathered per image bin. 1 (default) infers "
+                        "every frame. Higher N trades class accuracy for "
+                        "latency -- scripts/semantics_rate.py measures both.")
     p.add_argument("--viz", action="store_true", help="open the Rerun dashboard")
     p.add_argument("--save", default=None, help="write a Rerun .rrd recording here")
     p.add_argument(
@@ -319,7 +357,8 @@ def main(argv=None) -> int:
     t_pull = time.perf_counter()
     for frame in iter_pipeline(args.seq, args.frames, use_patchworkpp=not args.no_patchworkpp,
                                start_frame=args.start_frame, device=args.device,
-                               semantic_source=args.semantics):
+                               semantic_source=args.semantics,
+                               semantic_every=args.semantics_every):
         t_frame = time.perf_counter()          # the pull above was perception
         ground_method = frame.ground_method
         counters = engine.step(frame) if engine is not None else None
