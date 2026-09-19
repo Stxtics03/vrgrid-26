@@ -59,7 +59,8 @@ class PerceptionFrame:
 
 
 def iter_pipeline(seq: str, max_frames: int | None, use_patchworkpp: bool = True,
-                  timer=None, start_frame: int = 0, device: str = "cpu"):
+                  timer=None, start_frame: int = 0, device: str = "cpu",
+                  semantic_source: str = "gt"):
     """Yield a PerceptionFrame per scan of `seq`.
 
     `start_frame` skips ahead before the first yield (default 0, so existing
@@ -92,6 +93,22 @@ def iter_pipeline(seq: str, max_frames: int | None, use_patchworkpp: bool = True
         from vrgrid.gpu.device import DevicePerception, resolve_device
         resolve_device(device)
         perception = DevicePerception()
+
+    # Built ONCE here, not per frame, and handed down explicitly rather than
+    # cached in a module global -- the Patchwork++ singleton (open item D1) is
+    # what that costs, and a second stateful object with a hidden lifetime is
+    # not worth repeating.
+    frnet = None
+    if semantic_source == "frnet":
+        if perception is not None:
+            raise NotImplementedError(
+                "--semantics frnet is CPU-only for now. The device path derives "
+                "sem, moving and cls together in one kernel from the raw label "
+                "word, so feeding it model predictions means writing all three "
+                "consistently, not overriding one. Run --device cpu, or use "
+                "--semantics gt on the card.")
+        from vrgrid.perception import semantics as _sem
+        frnet = _sem.FRNetInference()
     # A fresh Patchwork++ estimator per run: it adapts from past scans, so a
     # shared one made a second run in the same process map differently (see
     # `ground.reset_estimator`). Runs here, at the first frame's pull.
@@ -111,12 +128,12 @@ def iter_pipeline(seq: str, max_frames: int | None, use_patchworkpp: bool = True
         points, raw_labels, pose = item
         yield perceive(points, raw_labels, pose, seq, start_frame + i,
                        use_patchworkpp=use_patchworkpp, timer=timer,
-                       perception=perception)
+                       perception=perception, frnet=frnet)
         i += 1
 
 
 def perceive(points, raw_labels, pose, seq: str, index: int, use_patchworkpp=True,
-             timer=None, perception=None, ground_result=None):
+             timer=None, perception=None, ground_result=None, frnet=None):
     """Every perception stage for one scan, on the host or on the card.
 
     `perception` is a `gpu.device.DevicePerception` for the device path, None
@@ -165,8 +182,23 @@ def perceive(points, raw_labels, pose, seq: str, index: int, use_patchworkpp=Tru
     with stage("range_image"):
         ri, inv = range_image.project(points)
     with stage("semantics"):
-        semantic = semantics.semantic_labels(raw_labels)
+        if frnet is not None:
+            # The model decides the class. This is the configuration the
+            # problem statement asks for -- a deep-learning pipeline whose
+            # segmentation feeds the map -- and it is NOT the one the
+            # evaluation in math 9 uses, which takes the class from the
+            # .label files so that a mapping number cannot depend on
+            # segmentation quality. Both are real; say which one produced
+            # any figure that is quoted.
+            semantic = frnet.infer_points(points)
+        else:
+            semantic = semantics.semantic_labels(raw_labels)
     with stage("motion"):
+        # Motion stays ground truth in BOTH modes. FRNet predicts a class, not
+        # whether the thing is moving -- SemanticKITTI carries that as separate
+        # `moving-*` ids -- so there is no model prediction to substitute here.
+        # Disclose it: --semantics frnet makes the CLASS learned, not the
+        # motion flag.
         moving = semantics.is_moving(raw_labels)
 
     with stage("ground"):
@@ -210,6 +242,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--frames", type=int, default=None, help="stop after N frames")
     p.add_argument("--start-frame", type=int, default=0,
                    help="start from this frame index (default 0); --frames counts from here")
+    p.add_argument("--semantics", choices=("gt", "frnet"), default="gt",
+                   help="where the per-point class comes from. 'gt' reads the "
+                        "SemanticKITTI .label files, which is what every "
+                        "mapping figure in this project is measured with -- it "
+                        "isolates the map from segmentation error (math 9). "
+                        "'frnet' runs the model and feeds ITS predictions to "
+                        "the map, which is the end-to-end deep-learning "
+                        "pipeline the problem statement asks for. CPU only.")
     p.add_argument("--viz", action="store_true", help="open the Rerun dashboard")
     p.add_argument("--save", default=None, help="write a Rerun .rrd recording here")
     p.add_argument(
@@ -278,7 +318,8 @@ def main(argv=None) -> int:
     ground_method = None
     t_pull = time.perf_counter()
     for frame in iter_pipeline(args.seq, args.frames, use_patchworkpp=not args.no_patchworkpp,
-                               start_frame=args.start_frame, device=args.device):
+                               start_frame=args.start_frame, device=args.device,
+                               semantic_source=args.semantics):
         t_frame = time.perf_counter()          # the pull above was perception
         ground_method = frame.ground_method
         counters = engine.step(frame) if engine is not None else None
