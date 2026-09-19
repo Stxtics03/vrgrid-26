@@ -206,6 +206,31 @@ def semantics():
         """)
 
 
+def semantics_from_prediction():
+    """The same three outputs, with the CLASS coming from a model instead.
+
+    `--semantics frnet` on the device path. Deliberately the same shape as
+    `semantics()` above, because the trap here is writing one of the three and
+    leaving the other two derived from the label word -- `cls` would then
+    disagree with `sem` and the map would fuse a class the frame does not
+    claim. All three are written together, from the same source, every time.
+
+    `moving` STILL comes from the label word, in this kernel and on the host
+    path both. FRNet predicts a class, not whether the thing is moving --
+    SemanticKITTI carries that as separate `moving-*` ids -- so there is no
+    prediction to substitute. `--semantics frnet` makes the class learned, not
+    the motion flag, and that is disclosed rather than papered over.
+    """
+    return _kernel("semantics_from_prediction",
+        "raw int32 pred, raw uint32 labels, raw bool moving_lut",
+        "int32 sem, bool moving, uint8 cls",
+        r"""
+        sem = pred[i];
+        moving = moving_lut[labels[i] & 0xFFFFu];
+        cls = sem < 0 ? (unsigned char)0 : (unsigned char)sem;
+        """)
+
+
 # --- map ----------------------------------------------------------------------
 
 def payload(dtype):

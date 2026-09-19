@@ -202,10 +202,14 @@ class DevicePerception:
         self.sem = cupy.zeros(cap, np.int32)
         self.moving = cupy.zeros(cap, np.bool_)
         self.cls = cupy.zeros(cap, np.uint8)
+        # Preallocated like everything else: no allocation in the frame
+        # loop, even on a path that only some runs take.
+        self.pred = cupy.zeros(cap, np.int32)
         self.generation = 0
         self._n = 0
 
-    def launch(self, points, points_world, raw_labels, stage=None):
+    def launch(self, points, points_world, raw_labels, stage=None,
+               semantic_pred=None):
         """Upload one scan and QUEUE its perception kernels. Returns without
         waiting for them -- ground segmentation runs on the host meanwhile."""
         stage = stage or (lambda _n: nullcontext())
@@ -231,8 +235,19 @@ class DevicePerception:
                               self.inverse, size=n)
         with stage("semantics"):
             self.labels[:n].set(np.ascontiguousarray(raw_labels, np.uint32))
-            K.semantics()(self.labels, self.lut, self.moving_lut,
-                          self.sem[:n], self.moving[:n], self.cls[:n])
+            if semantic_pred is None:
+                K.semantics()(self.labels, self.lut, self.moving_lut,
+                              self.sem[:n], self.moving[:n], self.cls[:n])
+            else:
+                # `--semantics frnet`: the CLASS comes from the model, `moving`
+                # still from the label word. Writing all three in one kernel
+                # rather than overriding `sem` alone -- leaving `cls` derived
+                # from the labels would fuse a class the frame does not claim,
+                # and nothing downstream would notice.
+                self.pred[:n].set(np.ascontiguousarray(semantic_pred, np.int32))
+                K.semantics_from_prediction()(
+                    self.pred, self.labels, self.moving_lut,
+                    self.sem[:n], self.moving[:n], self.cls[:n])
         with stage("reflectivity"):
             self.rho[:n].fill(0)
             K.reflectivity_to_points()(self.planes, self.inverse, self.npix, self.rho,

@@ -101,13 +101,6 @@ def iter_pipeline(seq: str, max_frames: int | None, use_patchworkpp: bool = True
     # not worth repeating.
     frnet = None
     if semantic_source == "frnet":
-        if perception is not None:
-            raise NotImplementedError(
-                "--semantics frnet is CPU-only for now. The device path derives "
-                "sem, moving and cls together in one kernel from the raw label "
-                "word, so feeding it model predictions means writing all three "
-                "consistently, not overriding one. Run --device cpu, or use "
-                "--semantics gt on the card.")
         from vrgrid.perception import semantics as _sem
         frnet = _sem.FRNetInference(amp=(semantic_precision == "fp16"))
     # One entry, rebound on every inference frame: the last per-PIXEL label
@@ -166,9 +159,17 @@ def perceive(points, raw_labels, pose, seq: str, index: int, use_patchworkpp=Tru
     if perception is not None:
         from vrgrid.gpu.device import DeviceFrame
 
+        pred = None
+        if frnet is not None:
+            # Before launch(), because the kernel needs it: the class is an
+            # INPUT to the device semantics stage in this mode, not something
+            # patched afterwards.
+            with stage("semantics_model"):
+                pred = frnet.infer_points(points)
         # Queued, not waited for: the card projects while the host segments.
         perception.launch(points, points_world, raw_labels,
-                          stage=stage if timer is not None else None)
+                          stage=stage if timer is not None else None,
+                          semantic_pred=pred)
         with stage("ground"):
             if ground_result is None:
                 # Patchwork++ needs no labels; the semantic fallback does, and
