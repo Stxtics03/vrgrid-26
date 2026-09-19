@@ -4,12 +4,15 @@ Run on the laptop and on the Kaggle Xeon and diff. Nothing here touches the
 GPU -- it isolates numpy's own float32 transcendentals, which are SIMD
 dispatched and need not agree across CPU architectures.
 """
-import numpy as np, platform
+import platform
+
+import numpy as np
 from vrgrid.perception import loader
 
 IDX = [56230, 58375, 58376, 89740, 89741]
 PHI_MAX, D_PHI = None, None
 from vrgrid.perception import range_image as RI
+
 cfg = RI.load_sensor_config()
 d_theta, d_phi = RI.bin_widths(cfg)
 phi_max = np.deg2rad(cfg["phi_max_deg"])
