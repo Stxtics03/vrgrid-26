@@ -508,7 +508,7 @@ Driving the shipping code with one `Timer` shared across both halves, 200 frames
 - **Card peak.** Both together peak at 4.7 GB of 8 GB.
 - **Latency.** Grid alone is 22.0 / 27.8 ms and FRNet alone 91.3 / 98.7 ms (p50 / p99). In one loop the frame is 122.8 / 130.3 ms, 8.4% over the sum, and misses 10 Hz. As two processes the grid runs at 52.8 / 69.1 ms (+140% at p50) but still meets 10 Hz.
 
-**⚑ Power cap:** every FRNet configuration ran at the laptop's software power cap (0x4, 96 W). The T4 column remains open.
+**⚑ Power cap:** every FRNet configuration ran at the laptop's software power cap (0x4, 96 W). The T4 column is now measured — see 2026-09-19.
 
 **So what:** R9b now has a table in which every megabyte is attributed. The contention result gives a latency reason, on top of the evaluation reason, to keep segmentation out of the map's loop.
 
@@ -551,3 +551,68 @@ Driving the shipping code with one `Timer` shared across both halves, 200 frames
 **What happened:** R9 showed that the refinement pool (49.6 ms) and the §7.1 bitfield (37.4 ms) would set the latency of any pipeline that enables them. Both are now much faster, with decisions unchanged. `gate.apply` makes the same sequential decisions without per-request table scans: 8.5 ms. `traversability.bitfield` uses lookup tables and cached stencils on the host (30 ms), or runs on the card via `update(device="cuda")` (4.8 ms), with a guard band for CUDA's last-bit `hypot` differences. Seq 08: map hash, pool state and gate counts identical frame by frame. The references are kept and pinned by equivalence tests, and the gate test is mutation-checked. Pyramid unchanged at 2.8 ms. Total ~87 → ~16 ms.
 
 **Flagged for Aakash:** a refined cell that fires again has its block re-split from the parent every frame, overwriting its children. Left unchanged.
+
+## 2026-09-19 — Shrestha
+
+**Module:** D3 — the T4 column, on Kaggle rather than AWS
+
+**What happened:** AWS was abandoned, not deferred. Every GPU quota on the account reads 0 — EC2 on-demand, EC2 spot, the P family, and every SageMaker `ml.g4dn.*` — and the increase request was refused, because the free plan has no GPU tier. The whole T4 pass ran on Kaggle's free T4 (15.6 GB) instead, at zero cost, against a public SemanticKITTI mirror that the notebook refuses to use until three md5s of sequence 08 match the laptop's own copy. Lifetime AWS spend $0.00; the bucket and all guardrails are torn down.
+
+**The T4 column, seq 08, 200 frames:** frame p50 21.94 / p99 28.40 ms on the `5/10/50` schedule → 45.6 / 35.2 FPS, meets 10 Hz at p99 with 3.5× headroom. Contention on 16 GB rather than 8: peak whole-card use was 4,713 MiB of 15,360, so **memory was never the binding constraint** — doubling VRAM does not rescue 10 Hz, and the laptop's 8 GB result was a compute and host-CPU limit wearing a memory costume. Grid slows 70.1% at p50 under contention, FRNet 17.2%.
+
+**⚑ Parity FAILED on the T4 and the fix was in perception, not the kernels.** `gpu_parity` reported `range_image` differing at frame 7 — three pixels of 32,768. It was not a tie-break race (the sort key packs the unique point index, so every key is unique) and not an overflow (`device.py:176` guards it). It was numpy: on point 58375 the elevation is `-0.082030467689037323` under numpy 2.5.3 on an i7-14650HX and `-0.08203047513961792` under numpy 2.0.2 on a Xeon, a whole row apart after `floor()`, while `asin` in float64 gives the same bits on both. **The CUDA path was the stable one all along** — the rule already written in `src/gpu/CLAUDE.md`, "atan2/asin in double then round to float32", is the numerically stable choice and perception had not adopted it. A device-side "fix" was tried first and made it worse (fails at frame 4), and that is recorded in the kernel so it is not retried. Elevation and the column index now go through float64 in `range_image.py`, `project_keys` and `spherical_project` alike.
+
+**The result worth quoting:** the same 200 frames now produce the same map on two machines sharing no hardware and no numpy — Xeon + Tesla T4 + numpy 2.0.2 against i7-14650HX + RTX 5050 + numpy 2.5.3 — **final map hash `2af93787e6c1c46d237669fc85b3ffdb`, 7,648,849 cells cleared, on both.** The laptop's own 60-frame hash is unchanged before and after, so this made the existing answer portable rather than producing a new one. `docs/gpu-lane/12-PARITY-FRAME7.md`.
+
+## 2026-09-19 (later) — Shrestha
+
+**Module:** D3 — FRNet fine-tuning, and what the 2 Sep −0.5 mIoU actually was
+
+**What happened:** The 600-step recipe's loss was undertraining plus a class weighting optimising something other than the metric, not evidence that fine-tuning hurts. Nine configurations, all scored on seq 08, 200 frames:
+
+    pretrained baseline                        90.3%  65.2%  61.1%
+    600 steps, head (the 2 Sep recipe)         89.8%  64.6%  60.9%
+    2000, head                                 90.4%  65.1%  61.2%
+    2000, head, no class weighting             90.5%  65.2%  61.2%
+    2000, head+backbone, lr 1e-4               90.4%  65.2%  61.6%
+    2000, all unfrozen, lr 5e-5                89.9%  64.9%  61.1%
+
+Drop the 3× weight on terrain/vegetation and train to 2,000 and mIoU returns to baseline exactly. Unfreezing the backbone buys **+0.5 on the §7.1 drivable set**, the only five classes the map consults, and it **cannot run on the laptop at all** — 8 GB will not hold backbone gradients.
+
+**A 20,000-step curve settles it.** Five segments of 4,000 on the T4, each resuming the last: mIoU 65.2 → 64.9 → 64.7 → 64.4 → 64.5. It **peaks at 4,000 steps and declines**. The checkpoint is at its ceiling; the useful window is 2,000–4,000 steps and the gain is about half a point wherever inside it you stop. The notebook's own verdict line read "still rising — undertrained" because it compared only the last two points; that line is wrong and the table is right.
+
+**fp16 is free:** autocast takes inference p50 87.8 → 47.7 ms and p99 104.7 → 48.5, for −0.003 pp point accuracy and −0.025 pp mIoU over 60 frames. It helps the tail more than the median, which is the half a 10 Hz claim is about.
+
+## 2026-09-19 (evening) — Shrestha
+
+**Module:** D3 — closing the problem statement's own requirements
+
+**What happened:** The statement asks for a **deep learning pipeline** and names the model first among deliverables. `FRNetInference` had been complete and working since 2 Sep, but nothing could reach it: `segment()` raises on purpose and `perceive()` only ever called `semantic_labels(raw_labels)`. The model was built and left unplugged. `--semantics frnet` now feeds its predictions to the map — verified by disagreement, 86.5% agreement with the ground-truth path on frame 0, which is the model's error rate appearing where it should.
+
+**Both halves were needed to make it real time.** The map on CPU with fp16 misses 10 Hz; the CUDA map at fp32 misses. Together: **p50 71.8 / p99 79.5 ms → 13.9 / 12.6 FPS, inside the budget with 20% headroom.** `semantics_from_prediction()` writes `sem`, `moving` and `cls` in one kernel; overriding `sem` alone would leave `cls` derived from the label word and the map would fuse a class the frame never claimed.
+
+**⚑ Determinism does not hold in `--semantics frnet`, and it is the model.** CPU vs CPU over two runs disagrees on 0.028–0.046% of points; CPU vs CUDA on 0.028–0.047%. The same magnitude either way, so the device path is as consistent with the host as the host is with itself. FRNet's `scatter_mean` is order-dependent on CUDA. The guarantee and `make test-determinism` are about the ground-truth-label path, which is unaffected — `gpu_parity` is still identical on 30/30 frames.
+
+**Accuracy against DISTANCE**, which the statement asks for and nothing measured before. Bins are the ring boundaries, so each row is "how well does this classify inside the ring that stores it at this resolution":
+
+    ring 0    0-10 m   11,348,345 scored   93.2%   mIoU 65.4%   3-group 95.1%
+    ring 1   10-25 m    8,330,568 scored   88.2%   mIoU 67.0%   3-group 91.8%
+    ring 2   25-50 m    3,062,980 scored   85.3%   mIoU 55.9%   3-group 92.0%
+    ring 3  50-100 m            0 scored   NOT SCORABLE
+    pooled                                 90.3%
+
+Pooled reproduces the published 90.3%, which is the check that it measures the same thing before splitting it. Fine 19-class accuracy falls with range; **the statement's own three categories — terrain, static obstacle, dynamic object — hold at 95.1 / 91.8 / 92.0.** Coarsening costs fine class distinctions and does not cost the distinction a planner acts on.
+
+**⚑ RING 3 CANNOT BE SCORED.** 1,139,986 returns land between 50 and 100 m over these 200 frames and not one carries a ground-truth label — SemanticKITTI stops labelling at 50 m. The map builds ring 3 and its geometry is measured elsewhere; its *classification* accuracy is not measurable against this dataset and must not be claimed.
+
+## 2026-09-19 (night) — Shrestha
+
+**Module:** D3 — motion without the label file
+
+**What happened:** FRNet predicts a class, not whether a thing is moving, so `--semantics frnet` was still taking motion from ground truth. A geometric estimator (`perception/motion.py`) re-projects the previous scan into the current pose and flags returns arriving closer than the surface that bearing showed — a free-space violation, the §10.4 idea. On seq 08, 200 frames: **precision 16.3%, recall 15.0%**. Not good enough to ship; motion stays ground truth and is disclosed.
+
+Two findings kept. Excluding ground returns is most of what works — the road is seen at grazing incidence where one bearing bin is metres of range, and the mask took precision 11.6 → 36.4% on a 60-frame sample. And **raising the tolerance makes precision worse** (36.4 → 23.0 → 16.6 → 10.3% at 0.3 / 0.5 / 1 / 2 m), which says the false positives are large-magnitude depth discontinuities, not small-magnitude noise. Tuning the threshold upward is the wrong instinct.
+
+**The literature says why none of it works.** Nobody thresholds a residual; they concatenate residual images as input channels to a range-image network. LiDAR-MOS on SemanticKITTI-MOS val: 51.9 IoU single frame, **59.9 with one residual channel**, 62.5 with eight plus semantic filtering. Tested their own formula `|r_now − r_prev| / r_now` as a direct threshold: 10–12% precision at every value, *worse* than the cruder rule. The formula was never the problem — using it as a decision rather than a feature was. `docs/gpu-lane/14-MOS-RESEARCH.md`.
+
+**Confirmed on `staging`:** the same residuals at lags 1/2/4/8 plus box-filtered neighbourhood, into a per-point MLP, trained on seqs 01–04 and 10 and evaluated on seq 08 — **moving IoU 8.5% → 19.1%, precision 16.3% → 61.6%** at better recall, and 75.0% precision at a stricter operating point. Two earlier attempts scored *worse* than the rule and both were a training-data error: seq 00's first 100 frames are 0.021% moving against seq 04's 0.847% and seq 08's 3.199%, a 40-fold spread, and I had picked the emptiest. The remaining gap to 59.9 is the receptive field — a per-point classifier cannot see that a moving object is a spatially coherent blob.
