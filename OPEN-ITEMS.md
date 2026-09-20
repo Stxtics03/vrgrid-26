@@ -1,8 +1,13 @@
 # Open items — the master list
 
 Single place for what is outstanding, so nothing falls between sessions.
-Assembled 2026-09-12 by reading every file in `reports/` and `pending-review/`
-plus `MORNING-SUMMARY.md`, against `main` @ `e4bd731`.
+
+**Last reconciled against a real run: 2026-09-20.** Sections 2, R-a, R-b and R-d
+were stale for over a week and named things as blockers that had started
+passing; 5c is new. Re-run a gate before believing any status line here.
+
+Originally assembled 2026-09-12 by reading every file in `reports/` and
+`pending-review/` plus `MORNING-SUMMARY.md`, against `main` @ `e4bd731`.
 
 **How to read the status column:** *Decision* = waiting on JP, nothing to do
 until then. *Ready* = scoped, could be picked up now. *Blocked* = waiting on
@@ -25,35 +30,32 @@ something external or someone else.
 
 ---
 
-## 2. [!] The one that blocks other work
+## 2. ~~[!] The one that blocks other work~~ — CLOSED 2026-09-20
 
-**D1, the Patchwork++ singleton.** Flagging it separately because it is not just
-another queue item — it is currently **distorting measurements other decisions
-depend on**:
+**D1, the Patchwork++ singleton, no longer blocks anything.** The determinism
+gate it was named for now PASSES: `pytest -k "replay_is_identical or
+determinism"` is 14 passed / 0 failed with `VRGRID_DATA_ROOT` set, and
+`test_determinism.py` is 12/12. The entry below is kept because the
+*measurement* consequences it describes were real and the ring-1 numbers it
+affected were re-derived, not because the gate is still red.
 
-- `test_real_sequence_replay_is_identical` fails, correctly. Two replays in one
-  process differ by 1,245 of 1,479,013 points.
-- **~18% of the published seq-07 ring-1 RMSE is artifact**, not coarsening error
-  (3.60 → **3.04 cm** once the reference and the map use a consistent ground
-  mask).
-- **No ring-1 accuracy comparison finer than ~0.5 cm can be adjudicated until it
-  is fixed.** That is a live constraint on any future accuracy work, not a
-  hypothetical.
+What it said, for the record: two replays in one process differed by 1,245 of
+1,479,013 points; ~18% of the published seq-07 ring-1 RMSE was artifact
+(3.60 → 3.04 cm); no ring-1 comparison finer than ~0.5 cm could be adjudicated.
 
-Found twice independently — as the determinism gate failure, and as the ring-1
-reproduction mismatch. The fix direction is measured, not speculative: two
-estimators making one pass each agree exactly, 0 of 1.48 M points differing.
-
----
+⚑ **Re-verify before re-raising.** This list said D1 blocked the project for
+  over a week after the gate had started passing, and two people planned around
+  that. Run the gate before believing a status line in this file, including
+  this one.
 
 ## 3. Ready to pick up — scoped, no decision needed
 
 | # | item | notes |
 |---|---|---|
-| **R-a** | **Commit the measurement harnesses.** The recurring defect behind two unverifiable figures (see §5). Every `scratchpad/*.py` that produced a number in `reports/` should be in the repo. | Cheapest high-value item on the list. |
-| **R-b** | **Locate the p99 cause.** p99 is 127–146 ms against a 100 ms budget and **no parameter, warm-up length, frame count or library version moved it.** p50 is within reach; p99's cause has never been isolated. | The real 10 Hz blocker. Nothing measured so far explains it. |
+| **R-a** | **Commit the measurement harnesses.** Largely DONE for the GPU lane as of 2026-09-20: every number produced this week has its script in `scripts/` — `accuracy_by_range.py`, `semantics_rate.py`, `motion_eval.py`, `mos_learned.py`, `mos_fused.py`, `uncertainty_probe.py`, `farfield_labels.py`, and the Kaggle notebooks in `scripts/kaggle/`. **Still open for the older `reports/` figures**, which is where the two unverifiable numbers in §5 live. | |
+| ~~**R-b**~~ | ~~**Locate the p99 cause**, 127–146 ms against a 100 ms budget.~~ **CLOSED 2026-09-20.** The laptop meets 10 Hz at p99: frame p50 21.94 / p99 28.40 ms on `5/10/50`, 45.6 / 35.2 FPS, 3.5× headroom (`docs/gpu-lane/13-PS-SCHEDULE.md`). The 127–146 ms figures predate the split/merge and traversability speedups (87 → 16 ms, 2026-09-17) and the device frame loop. **What remains is not this item:** the DL pipeline — the map *plus* FRNet inference — is p99 79.5 ms, which meets 10 Hz but with far less margin, and the cost there is the model, not the map. | |
 | **R-c** | **`stdout` UTF-8 at entry.** Deferred deliberately when the `⚑` crash was fixed at two call sites; the general fix would cover every script. | `pending-review/timing-table-unicode-crash.md` |
-| **R-d** | **`ruff` E741 in `tests/test_metrics.py:472`** (ambiguous `l`). Pre-existing on `origin/main` from `014d388`, unrelated to any of this week's work, still red. | One-line fix, not my lane (tests/). |
+| ~~**R-d**~~ | ~~`ruff` E741 in `tests/test_metrics.py:472`.~~ **CLOSED.** `ruff check .` passes clean on `main`; it is a CI gate (`.github/workflows/ci.yml:36`) and it is green. | |
 | **R-e** | **README 99.87% vs `master-v4.md` 99.5%.** Logged as the same class of defect as the mIoU mismatch; never given its own pass. | Flagged in an earlier session, still open. |
 | **R-f** | **Seq 00 ring-1 residual (0.32 cm).** Narrowed to a 61–89 scored-cell population difference; not closeable because the harness that produced the published number was never committed. Would close if R-a had been done earlier. | `reports/ring1-reproduction-investigation.md` §6 |
 
@@ -94,6 +96,24 @@ estimators making one pass each agree exactly, 0 of 1.48 M points differing.
 
 ---
 
+## 5c. Opened 2026-09-20 — from the SIH-requirement pass
+
+The problem statement asks for a **deep learning pipeline** and for accuracy
+"across varying distances". Both are now met (`docs/gpu-lane/13-PS-SCHEDULE.md`,
+`14-MOS-RESEARCH.md`, and the 19 Sep research-log entries). What that work left
+open:
+
+| # | item | notes |
+|---|---|---|
+| **S-1** | **A fourth reason in `grid/gate.py`: refine where PERCEPTION is uncertain.** Measured first, because the pool is 512 blocks: at a FIXED range, the more uncertain half of points is 9–20 accuracy points worse (0–10 m: 100.0 vs 91.3; 10–25 m: 99.7 vs 85.6; 25–50 m: 98.8 vs 78.7). The signal is real and orthogonal to range, which is the only thing that justifies spending pool on it. `scripts/uncertainty_probe.py`. | **Aakash's file, his call.** Evidence is in the repo; the change is not Shrestha's to make. |
+| **S-2** | **Motion is GROUND TRUTH in both `--semantics gt` and `--semantics frnet`.** FRNet predicts a class, not motion. A model-free estimator exists and is measured at 16.3% precision (`perception/motion.py`); a learned one reaches 20.6% moving IoU on `staging` (`mos_learned.py`, `mos_fused.py`). Neither is good enough to ship. **Disclose it; do not let a reader assume the model predicts motion.** | Research problem, not a bug. |
+| **S-3** | **Residual channels into FRNet.** The literature's +8 IoU from a single residual channel (LiDAR-MOS, 51.9 → 59.9 on SemanticKITTI-MOS val). Our per-point MLP gets 20.6% because it has no receptive field. This is the largest accuracy win still available and it is a fine-tune of a working network on labels already on disk. | The next real piece of work. |
+| **S-4** | **Put the dynamic belief in the grid's own `log_odds`** rather than the side dict `mos_fused.py` uses. Worth +1.1 IoU as a prototype. | Touches the **frozen 12-byte cell struct** — whole-team sign-off, not a lane decision. |
+| **S-5** | **Ring 3's 3-group accuracy is not comparable to the near rings.** Far-field labels are propagated from near-field observations and exclude `moving-*` by construction, so ring 3 has no dynamic-class ground truth: its 91.8% is terrain vs static with the third category absent. The near rings are genuinely three-way. | Reporting hazard, already written into the script and the commit. |
+| **S-6** | **`--semantics frnet` is not bit-deterministic**, and it is the model: CPU vs CPU over two runs disagrees on 0.028–0.046% of points, CPU vs CUDA on 0.028–0.047%. FRNet's `scatter_mean` is order-dependent on CUDA. `make test-determinism` covers the ground-truth path and is unaffected. | Disclose; do not claim determinism for the frnet path. |
+
+---
+
 ## 5. The pattern worth acting on
 
 Twice in two sessions a published figure turned out to be **unverifiable because
@@ -125,8 +145,10 @@ this list.
 - **`src/perception/frnet/`:** frozen, untouched.
 - **`src/perception/ground.py`:** untouched — D1 is paused pending your design
   call, not attempted.
-- **Gates:** `pytest` 672 passed / 1 failed (the determinism gate, D1) / 3
-  skipped. `ruff` 1 error (R-d, pre-existing and unrelated).
+- **Gates (2026-09-20):** `pytest` **776 passed, 0 failed**. `ruff check .`
+  **clean**. `gpu_parity.py --seq 08 --frames 200` **identical on 200/200**,
+  and the final map hash now matches across two machines sharing no hardware
+  and no numpy (`docs/gpu-lane/12-PARITY-FRAME7.md`).
 - **`pending-review/` inventory:** 4 awaiting decision (D2, D3, D4 ×2), 4 now
   marked applied (`handover-latency-line-correction`, `r7b-mIoU`,
   `timing-table-unicode-crash`, and `patchworkpp-num-iter-tradeoff` as
