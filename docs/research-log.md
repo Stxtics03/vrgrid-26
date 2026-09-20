@@ -591,7 +591,7 @@ Drop the 3× weight on terrain/vegetation and train to 2,000 and mIoU returns to
 
 **Both halves were needed to make it real time.** The map on CPU with fp16 misses 10 Hz; the CUDA map at fp32 misses. Together: **p50 71.8 / p99 79.5 ms → 13.9 / 12.6 FPS, inside the budget with 20% headroom.** `semantics_from_prediction()` writes `sem`, `moving` and `cls` in one kernel; overriding `sem` alone would leave `cls` derived from the label word and the map would fuse a class the frame never claimed.
 
-**⚑ Determinism does not hold in `--semantics frnet`, and it is the model.** CPU vs CPU over two runs disagrees on 0.028–0.046% of points; CPU vs CUDA on 0.028–0.047%. The same magnitude either way, so the device path is as consistent with the host as the host is with itself. FRNet's `scatter_mean` is order-dependent on CUDA. The guarantee and `make test-determinism` are about the ground-truth-label path, which is unaffected — `gpu_parity` is still identical on 30/30 frames.
+**⚑ Determinism does not hold in `--semantics frnet`, and it is the model.** *(Cause corrected 20 Sep — it is `range_interpolation`, not `scatter_mean`, and it is not the model. See the 2026-09-20 (correction) entry; the paragraph below is left as written.)* CPU vs CPU over two runs disagrees on 0.028–0.046% of points; CPU vs CUDA on 0.028–0.047%. The same magnitude either way, so the device path is as consistent with the host as the host is with itself. FRNet's `scatter_mean` is order-dependent on CUDA. The guarantee and `make test-determinism` are about the ground-truth-label path, which is unaffected — `gpu_parity` is still identical on 30/30 frames.
 
 **Accuracy against DISTANCE**, which the statement asks for and nothing measured before. Bins are the ring boundaries, so each row is "how well does this classify inside the ring that stores it at this resolution":
 
@@ -616,3 +616,69 @@ Two findings kept. Excluding ground returns is most of what works — the road i
 **The literature says why none of it works.** Nobody thresholds a residual; they concatenate residual images as input channels to a range-image network. LiDAR-MOS on SemanticKITTI-MOS val: 51.9 IoU single frame, **59.9 with one residual channel**, 62.5 with eight plus semantic filtering. Tested their own formula `|r_now − r_prev| / r_now` as a direct threshold: 10–12% precision at every value, *worse* than the cruder rule. The formula was never the problem — using it as a decision rather than a feature was. `docs/gpu-lane/14-MOS-RESEARCH.md`.
 
 **Confirmed on `staging`:** the same residuals at lags 1/2/4/8 plus box-filtered neighbourhood, into a per-point MLP, trained on seqs 01–04 and 10 and evaluated on seq 08 — **moving IoU 8.5% → 19.1%, precision 16.3% → 61.6%** at better recall, and 75.0% precision at a stricter operating point. Two earlier attempts scored *worse* than the rule and both were a training-data error: seq 00's first 100 frames are 0.021% moving against seq 04's 0.847% and seq 08's 3.199%, a 40-fold spread, and I had picked the emptiest. The remaining gap to 59.9 is the receptive field — a per-point classifier cannot see that a moving object is a spatially coherent blob.
+
+## 2026-09-20 (correction) — Shrestha
+
+**Module:** D3 — `--semantics frnet` determinism, re-measured
+
+**⚑ THE 19 SEP DETERMINISM ENTRY NAMES THE WRONG CAUSE, AND "IT IS THE MODEL" IS WRONG.** That
+entry, and the ⚑ block in `d48831a`, report *CPU vs CPU, same code path, two runs* disagreeing on
+0.028–0.046% of points and then give the cause as "FRNet's `scatter_mean` is order-dependent **on
+CUDA**". A CUDA-only mechanism cannot produce a CPU-vs-CPU result. JP raised this; he is right that
+the attribution does not hold, and right that the thread count is the variable the entry never
+recorded. Re-measured today on seq 08 frames 0–2, `frnet-semantickitti_seg.pth`, this laptop:
+
+    condition                                         frame 0    frame 1    frame 2
+    CPU, PyTorch default threads (16), two processes   0.1070%    0.0729%    0.1291%
+    CPU, default threads, back-to-back in ONE process  0.1078%    0.1045%       --
+    CPU, torch.set_num_threads(1), two processes       0.0000%    0.0000%    0.0000%
+    CUDA, two processes                                0.0551%    0.0454%    0.0390%
+
+The non-zero rows are themselves samples of a random variable — a different pair of runs
+gives 0.068% where this one gave 0.107% — so read them as "about a tenth of a percent",
+not as figures to reproduce. The zero row is the one that reproduces exactly.
+
+**At one thread it is bit-exact.** So the predictions are reproducible; they are not reproducible
+at the default thread count, which is the condition every number on the frnet path was taken
+under and which no entry states. The in-process row matters too: the same loaded model, the same
+input tensor, two back-to-back calls disagree — so this is not a process-level artefact.
+
+**It is not the scatter loops either, which is where JP guessed.** Driven directly at the real
+shapes (124,000 × 64 into 25,000 slots) at 16 threads, `frustum_encoder.scatter_mean` and
+`scatter_max` are both bit-identical run to run, as is `torch.unique(coors, return_inverse=True,
+dim=0)`. Hooking every module across two forward passes puts the first divergence at
+`voxel_encoder.pre_norm`, **max |Δ| 9.5** — metres, not the 2 ulp (2.4e-07) a reordered float sum
+can produce. The magnitude is the tell: something discrete is changing, not a rounding order.
+
+**⚑ THE SITE IS `range_interpolation`, AND IT IS A CORRECTNESS BUG, NOT A REPRODUCIBILITY NIT.**
+`frnet.py:156` builds the range image with `image[proj_y[order], proj_x[order]] = res[order]`,
+relying on last-write-wins so that "the nearest return wins each pixel" — the docstring says so,
+deliberately, because it is what upstream does. Advanced-index assignment with **duplicate**
+indices is documented-nondeterministic in PyTorch, and on CPU which write survives depends on the
+intra-op partition. At the real collision rate — about 35% of a scan's points land on an
+already-claimed pixel — a different winner changes `idx`, so `mask` changes, so a different set of
+isolated gaps is filled with different values, so a different densified cloud reaches the encoder.
+Confirmed in isolation: the same duplicate-index assignment differs run to run at 16 threads and
+is identical at 1.
+
+    threads=16   image identical=False   idx identical=False
+    threads=1    image identical=True    idx identical=True
+
+So above one thread **the nearest-return rule silently does not hold**, and the port is not
+reproducing upstream's projection. Every accuracy figure on the frnet path — 86.5% agreement,
+90.3% pooled, the by-range table, the fp16 comparison — was measured in that state. They are not
+thereby wrong; the disagreement is 0.1% of points and the numbers are quoted to 0.1 pp. But the
+condition has to be recorded, and the rule has to be restored before any of them is defended as
+"faithful to upstream".
+
+**What stays true from the 19 Sep entry.** CPU and CUDA disagree by about the magnitude that CPU
+disagrees with itself, so nothing here indicts the device path specifically — that reading was
+sound and the 10 Hz result is untouched. The determinism guarantee and `make test-determinism` are
+about the ground-truth-label path, which none of this reaches; `gpu_parity` is still identical on
+30/30 frames. And the CUDA `scatter_mean` ulp finding of 19 Sep is itself correct — it is just not
+the cause of *this*.
+
+**Not fixed here.** The fix is either pinning the projection to one thread or replacing the
+duplicate-write with a deterministic nearest-wins reduction, and either one moves published
+numbers, so it is a decision and not a patch. Logged in `OPEN-ITEMS.md`. Repro:
+`scripts/frnet_determinism_probe.py`.
