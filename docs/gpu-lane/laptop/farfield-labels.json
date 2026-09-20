@@ -1,0 +1,12 @@
+{
+  "sequence": "08",
+  "frames": 200,
+  "voxel_m": 0.25,
+  "near_m": 50.0,
+  "hash_voxels": 601686,
+  "validation_agreement": 0.978660487392396,
+  "validation_points": 22296901,
+  "far_returns": 1139986,
+  "far_labelled": 446144,
+  "far_coverage": 0.3913591921304297
+}
