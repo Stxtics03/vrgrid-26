@@ -140,7 +140,8 @@ def ring_of_slot(gm, slot: int) -> int:
     return 0
 
 
-def candidates(gm, slots, thresholds=None):
+def candidates(gm, slots, thresholds=None, uncertainty=None,
+               uncertainty_max: float = 0.30):
     """Which of `slots` the gate fires on, and why. Returns a boolean mask.
 
     Takes the slots touched this frame rather than the whole map: the gate is
@@ -171,11 +172,44 @@ def candidates(gm, slots, thresholds=None):
     edge = (gm.soa["traversability"][slots] & (TRAV_STEP | TRAV_SLOPE)) != 0
     fires |= edge & (sigma2_m2 > th["traversability"]["sigma2_max_m2"])
 
+    # 4. THE PERCEPTION IS UNSURE HERE. The three reasons above ask what the
+    #    MAP knows. This one asks what the SEGMENTER knows, which is a
+    #    different question and -- measured -- not a restatement of range.
+    #
+    #    `uncertainty` is a per-slot array in [0, 1], normalised softmax
+    #    entropy from the semantic model, aggregated over the cell's returns.
+    #    Default None, so a run that does not supply it takes exactly the path
+    #    it took before this reason existed.
+    #
+    #    Why it is worth pool: on seq 08, at a FIXED range band, the more
+    #    uncertain half of points is 9 to 20 accuracy points worse --
+    #    0-10 m 100.0 vs 91.3, 10-25 m 99.7 vs 85.6, 25-50 m 98.8 vs 78.7
+    #    (`scripts/uncertainty_probe.py`). The ring schedule already knows
+    #    about range; this adds something it does not.
+    #
+    #    ⚑ The threshold is deliberately high. The module docstring records
+    #      what a too-eager reason costs: the roughness criterion fired on
+    #      20,954 of 143,587 cells, 8x the whole 512-block pool, and left the
+    #      priority ordering doing all the selection. 0.30 sits well into the
+    #      uncertain tail rather than at the median. It is a PARAMETER and not
+    #      a `configs/thresholds.yaml` key on purpose -- that file is frozen
+    #      before schedule comparisons, and a new key there is a gate-review
+    #      decision, not a lane one.
+    if uncertainty is not None:
+        u = np.asarray(uncertainty)
+        if u.shape[0] != gm.soa["height_variance"].shape[0]:
+            raise ValueError(
+                f"uncertainty must be one value per SLOT "
+                f"({gm.soa['height_variance'].shape[0]:,}), got {u.shape[0]:,} "
+                f"-- aggregate per cell before calling, not per point")
+        fires |= u[slots] > uncertainty_max
+
     return fires
 
 
 def apply(gm, slots, vehicle_speed_ms: float = 0.0, thresholds=None,
-          corridor_mask=None, grad_z=None) -> dict:
+          corridor_mask=None, grad_z=None, uncertainty=None,
+          uncertainty_max: float = 0.30) -> dict:
     """Run the gate over this frame's touched cells. Master v4 §3.4.
 
     Semantics are exactly `apply_reference` -- read it for why each step
@@ -215,7 +249,8 @@ def apply(gm, slots, vehicle_speed_ms: float = 0.0, thresholds=None,
     released = pool.release_overtaken_many(current_rings)
 
     slots = np.asarray(slots, dtype=np.int64)
-    fires = candidates(gm, slots, th)
+    fires = candidates(gm, slots, th, uncertainty=uncertainty,
+                       uncertainty_max=uncertainty_max)
     fired = slots[fires]
     result = {"released": released, "fired": int(fires.sum()),
               "acquired": 0, "refused": 0, "unfit": 0}
@@ -324,7 +359,8 @@ def _priorities(gm, slots, x_m, y_m, speed_ms: float) -> np.ndarray:
 
 
 def apply_reference(gm, slots, vehicle_speed_ms: float = 0.0, thresholds=None,
-          corridor_mask=None, grad_z=None) -> dict:
+          corridor_mask=None, grad_z=None, uncertainty=None,
+          uncertainty_max: float = 0.30) -> dict:
     """The per-cell reference `apply` is pinned against. Master v4 §3.4.
 
     Kept verbatim so `test_apply_matches_the_reference` can prove the fast
@@ -389,7 +425,8 @@ def apply_reference(gm, slots, vehicle_speed_ms: float = 0.0, thresholds=None,
                                         gm.buffers))
 
     slots = np.asarray(slots, dtype=np.int64)
-    fires = candidates(gm, slots, th)
+    fires = candidates(gm, slots, th, uncertainty=uncertainty,
+                       uncertainty_max=uncertainty_max)
     fired = slots[fires]
 
     acquired = refused = unfit = 0
