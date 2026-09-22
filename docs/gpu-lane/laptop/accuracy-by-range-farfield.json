@@ -1,0 +1,67 @@
+{
+  "sequence": "08",
+  "frames": 200,
+  "edges_m": [
+    10.0,
+    25.0,
+    50.0,
+    100.0
+  ],
+  "pooled_acc19": 0.9015840366306126,
+  "returns_total": 24541104,
+  "scored_total": 23188037,
+  "bins": [
+    {
+      "bin": "ring 0",
+      "lo_m": 0.0,
+      "hi_m": 10.0,
+      "returns": 11671697,
+      "scored": 11348345,
+      "scorable": true,
+      "acc19": 0.9320983808652274,
+      "miou": 0.6541023547682862,
+      "group_acc": 0.9510681072878909,
+      "drivable_miou": 0.6755620870680796,
+      "classes_present": 11
+    },
+    {
+      "bin": "ring 1",
+      "lo_m": 10.0,
+      "hi_m": 25.0,
+      "returns": 8572694,
+      "scored": 8330568,
+      "scorable": true,
+      "acc19": 0.8818821237639498,
+      "miou": 0.6701622431974271,
+      "group_acc": 0.9179188021753139,
+      "drivable_miou": 0.6053436334094666,
+      "classes_present": 15
+    },
+    {
+      "bin": "ring 2",
+      "lo_m": 25.0,
+      "hi_m": 50.0,
+      "returns": 3156727,
+      "scored": 3062980,
+      "scorable": true,
+      "acc19": 0.853519774859777,
+      "miou": 0.5583862913348233,
+      "group_acc": 0.9203546872653429,
+      "drivable_miou": 0.5115959404895211,
+      "classes_present": 15
+    },
+    {
+      "bin": "ring 3",
+      "lo_m": 50.0,
+      "hi_m": 100.0,
+      "returns": 1139986,
+      "scored": 446144,
+      "scorable": true,
+      "acc19": 0.8232700652704059,
+      "miou": 0.32859695093478664,
+      "group_acc": 0.9178830153493043,
+      "drivable_miou": 0.29768494563509523,
+      "classes_present": 14
+    }
+  ]
+}

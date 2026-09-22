@@ -355,3 +355,37 @@ def test_the_ablation_reports_unfit_rather_than_truncating():
     assert out["unfit"] == 1
     assert out["acquired"] == 0
     assert ab.pool.free_blocks == ab.pool.blocks
+
+
+def test_uncertainty_reason_is_opt_in_and_fires_where_the_model_is_unsure(gm):
+    """The fourth gate reason: refine where PERCEPTION is unsure.
+
+    Two things are pinned. First that it is OPT-IN -- omitting `uncertainty`
+    must take exactly the path the gate took before this reason existed, so no
+    published map moves because a parameter gained a default. Second that when
+    supplied it actually fires, and only above the threshold.
+    """
+    from vrgrid.grid import gate
+
+    slots = np.arange(64, dtype=np.int64)
+
+    base = gate.candidates(gm, slots)
+    n_slots = gm.soa["height_variance"].shape[0]
+
+    # Opt-in: absent and all-zero uncertainty are both no-ops.
+    quiet = np.zeros(n_slots, np.float32)
+    assert np.array_equal(gate.candidates(gm, slots, uncertainty=quiet), base)
+
+    # Above the threshold it fires; below it does not.
+    u = np.zeros(n_slots, np.float32)
+    u[slots[:5]] = 0.9              # well past the 0.30 default
+    u[slots[5:10]] = 0.05           # well below it
+    fired = gate.candidates(gm, slots, uncertainty=u)
+    assert fired[:5].all(), "high uncertainty must fire the gate"
+    assert np.array_equal(fired[5:10], base[5:10]), \
+        "low uncertainty must not change the decision"
+
+    # A per-POINT array is the easy mistake and must not be silently accepted:
+    # it would index the wrong cells and fire the gate somewhere arbitrary.
+    with pytest.raises(ValueError, match="one value per SLOT"):
+        gate.candidates(gm, slots, uncertainty=np.zeros(123, np.float32))

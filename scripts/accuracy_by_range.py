@@ -74,6 +74,13 @@ def main() -> int:
     ap.add_argument("--fast-scatter", action="store_true",
                     help="torch.scatter_reduce for FRNet's frustum reductions "
                          "(scripts/frnet_fast_scatter.py) -- minutes, not hours")
+    ap.add_argument("--farfield-labels", action="store_true",
+                    help="score the far field too, using labels propagated "
+                         "from near-field observations of the same world voxel "
+                         "(scripts/farfield_labels.py). STATIC CLASSES ONLY -- "
+                         "moving objects are excluded by construction, so the "
+                         "far rows measure terrain and static structure.")
+    ap.add_argument("--farfield-voxel", type=float, default=0.25)
     ap.add_argument("--out", default=None, help="write the table as JSON here")
     args = ap.parse_args()
 
@@ -108,6 +115,30 @@ def main() -> int:
     g_total = np.zeros(nb, np.int64)
     returns = np.zeros(nb, np.int64)
 
+    # Optional: a world label hash, so returns past SemanticKITTI's ~50 m
+    # labelling limit can be scored against what a later pass called that
+    # same piece of ground. Built from the SAME frames being evaluated.
+    table = {}
+    pose_of = {}          # frame index -> pose, only populated for far-field mode
+    if args.farfield_labels:
+        from vrgrid.perception import transforms
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from farfield_labels import _keys
+        print("building the world label hash for far-field scoring...", flush=True)
+        for i, (pts, lab, pose) in enumerate(
+                loader.scans(args.seq, max_frames=args.frames)):
+            pose_of[i] = pose
+            t = transforms.sensor_to_world(pose, sequence=args.seq)
+            w = transforms.transform_points(pts[:, :3], t)
+            sem = semantics.semantic_labels(lab)
+            mov = semantics.is_moving(lab)
+            rr = np.linalg.norm(pts[:, :3], axis=1)
+            good = (sem >= 0) & ~mov & (rr < 50.0)
+            if good.any():
+                kk = _keys(w[good], args.farfield_voxel)
+                table.update(dict(zip(kk.tolist(), sem[good].tolist(), strict=True)))
+        print(f"  {len(table):,} labelled world voxels\n", flush=True)
+
     root = Path(loader.DATA_ROOT) / "sequences" / args.seq
     frames = 0
     for i in range(args.frames):
@@ -122,6 +153,18 @@ def main() -> int:
                 [torch.from_numpy(pts).float().to(dev)])[0].cpu().numpy()
 
         rng = np.linalg.norm(pts[:, :3], axis=1)
+        if table and i in pose_of:
+            # Fill in the unlabelled far field from the world hash. Only where
+            # SemanticKITTI has nothing -- a real label always wins.
+            need = (gt < 0) & (rng >= 50.0)
+            if need.any():
+                from vrgrid.perception import transforms as _tf
+                t = _tf.sensor_to_world(pose_of[i], sequence=args.seq)
+                w = _tf.transform_points(pts[need, :3], t)
+                kk = _keys(w, args.farfield_voxel)
+                got = np.array([table.get(int(x), -1) for x in kk.tolist()], np.int32)
+                idx = np.nonzero(need)[0]
+                gt[idx[got >= 0]] = got[got >= 0]
         ok = gt >= 0                      # unlabelled points are not scored
         for b, (lo, hi) in enumerate(bins):
             inbin = (rng >= lo) & (rng < hi)
