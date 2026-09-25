@@ -34,3 +34,16 @@ dynamic:
 anomaly:
   surface_classes: [road, parking]
   min_cells: 20
+
+# HOLD: the panel shows the WORST verdict of the last `hold_frames` frames. A
+# hazard shows on the frame it is seen -- never late -- and is held this long
+# after its last sighting instead of dropping straight back to green.
+#   * why: seq 00 frames 27-100 have a moving bicyclist ~2.5 m ahead, inside
+#     the blind cone's radius, where the lowest beam is already ~0.6 m above the
+#     ground. Only a sliver of the rider is hit: 0-14 points a scan, straddling
+#     min_points, so the raw verdict flipped red/green 28 times in 160 frames,
+#     14 of them one-frame blinks.
+#   * 8 frames = 0.8 s at 10 Hz. Measured on seq 00 frames 0-159: 3 changes at 8
+#     (clear -> cyclist -> clear -> the event at ~140), 5 at 5 frames (one 3-frame
+#     green blink mid-cyclist left), 9 at 3. Red shown late: 0 at every value.
+hold_frames: 8
