@@ -262,23 +262,83 @@ def kpi_frame_time_markdown(total_ms: float | None, budget_ms: float) -> str:
                       "Frame time"])
 
 
-def kpi_moving_markdown(cleared_now: int | None, cleared_run: int | None, *,
-                        ghost_removal: bool) -> str:
-    """KPI tile: moving-object cells cleared this frame, and over the run."""
-    if not ghost_removal:
-        return "## off\n\nMoving-object cells cleared"
-    now = "—" if cleared_now is None else f"{int(cleared_now):,}"
-    run = "—" if cleared_run is None else f"{int(cleared_run):,}"
-    return "\n".join([f"## {now}", "", f"this frame · {run} this run", "",
-                      "Moving-object cells cleared"])
+def load_proximity() -> dict:
+    """`configs/proximity.yaml`: the near-field panel's square zones and its
+    verdict thresholds, with class NAMES resolved to learning ids through
+    the one class table (`traversability.class_ids`). Read once at startup."""
+    import numpy as np
+    import yaml
+    from vrgrid.grid.schedule import CONFIG_DIR as _dir
+    from vrgrid.grid.traversability import class_ids
+
+    with open(_dir / "proximity.yaml", encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+    ids = class_ids()
+
+    def resolve(names):
+        unknown = [n for n in names if n not in ids]
+        if unknown:
+            raise ValueError(f"proximity.yaml names no class in the label map: {unknown}")
+        return np.array(sorted(ids[n] for n in names), dtype=np.int32)
+
+    half = sorted(float(r) for r in raw["half_widths_m"])
+    return {
+        "half_widths_m": half,
+        "outer_m": half[-1],
+        "person_ids": resolve(raw["dynamic"]["person_classes"]),
+        "min_points": int(raw["dynamic"]["min_points"]),
+        "surface_ids": resolve(raw["anomaly"]["surface_classes"]),
+        "min_cells": int(raw["anomaly"]["min_cells"]),
+    }
 
 
-def kpi_deterministic_markdown() -> str:
-    """KPI tile: determinism is a CI-blocking test, not something one run can
-    show on its own -- the tile says where the check lives."""
-    # Short lines: a quarter-width tile wrapped "identical map hash" onto a
-    # third line and cut it.
-    return "## ✓ Deterministic\n\nsame input → identical hash\n\nCI-blocking test"
+# The panel's three states, worst first. RED beats YELLOW beats GREEN.
+PROXIMITY_CLEAR, PROXIMITY_ANOMALY, PROXIMITY_DYNAMIC = "clear", "anomaly", "dynamic"
+
+
+def proximity_verdict(n_dynamic: int, nearest_dynamic_m, n_anomaly: int,
+                      nearest_anomaly_m, cfg: dict) -> tuple[str, str]:
+    """`(state, label)` for the near-field panel, from counts already limited
+    to the outer square. A moving object or person outranks a road anomaly;
+    below its minimum count either one is noise, and the car is clear.
+
+    "clear" means nothing was SEEN inside the square -- the 3.74 m blind cone
+    is still unknown, and the panel draws it so."""
+    if n_dynamic >= cfg["min_points"]:
+        return PROXIMITY_DYNAMIC, f"OBJECT {nearest_dynamic_m:.1f} m"
+    if n_anomaly >= cfg["min_cells"]:
+        return PROXIMITY_ANOMALY, f"ROAD ANOMALY {nearest_anomaly_m:.1f} m"
+    return PROXIMITY_CLEAR, "CLEAR"
+
+
+# The hazard timeline's y value per state: one row each, worst on top.
+PROXIMITY_LEVEL = {PROXIMITY_CLEAR: 0, PROXIMITY_ANOMALY: 1, PROXIMITY_DYNAMIC: 2}
+_PROXIMITY_MARK = {PROXIMITY_CLEAR: "✓", PROXIMITY_ANOMALY: "△", PROXIMITY_DYNAMIC: "✗"}
+
+
+def proximity_readout_markdown(state: str, label: str, what: str, zones, cfg: dict) -> str:
+    """The near-field readout beside the top view: the verdict big, what the
+    nearest hazard is, and a count per square. `zones` is `[(half_width_m,
+    object_points, anomaly_cells), ...]`, innermost first. Markdown cannot be
+    coloured in Rerun, so the state is a symbol -- the same three the
+    frame-time tile uses -- and the top view carries the colour.
+
+    The units are what is actually counted, points and cells, never
+    "objects": one person is dozens of points and one pothole many cells."""
+    rows = [f"| {hw:g} m | {pts:,} | {cells:,} |" for hw, pts, cells in zones]
+    blind = blind_cone_radius_m()
+    return "\n".join([
+        f"## {_PROXIMITY_MARK[state]} {label}",
+        "",
+        what,
+        "",
+        "| square | object points | pothole cells |",
+        "|---|--:|--:|",
+        *rows,
+        "",
+        (f"red at {cfg['min_points']}+ points · yellow at {cfg['min_cells']}+ cells · "
+         f"blind spot {blind:.1f} m unknown"),
+    ])
 
 
 # Results the SIH26053 deck quotes (slides 4-5), shown on the demo's side panel.
