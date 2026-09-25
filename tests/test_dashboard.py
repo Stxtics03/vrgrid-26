@@ -577,7 +577,8 @@ def test_demo_panels_and_graphs_update_every_frame(tmp_path, monkeypatch):
 
     assert len(sent) == 1
     for path in ("panel/status", "panel/header", "panel/kpi/memory", "panel/kpi/frame_time",
-                 "panel/kpi/moving",
+                 "proximity/vehicle", "proximity/objects",     # the near-field verdict
+                 "panel/proximity", "stats/hazard/clear",      # its readout and timeline
                  "stats/frame_ms/under", "stats/frame_ms/over", "stats/frame_ms/budget",
                  "stats/memory_mb/in_use", "stats/memory_mb/allocation", "stats/memory_mb/uniform",
                  "stats/moving/cleared",
@@ -716,13 +717,11 @@ def test_saving_without_a_viewer_is_labelled_as_not_rendering(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_kpi_tiles_say_four_numbers_big_and_plainly():
+def test_kpi_tiles_say_two_numbers_big_and_plainly():
     from vrgrid.dash._config import (
         header_markdown,
-        kpi_deterministic_markdown,
         kpi_frame_time_markdown,
         kpi_memory_markdown,
-        kpi_moving_markdown,
     )
 
     sched = load_schedule("5/10/20/40")
@@ -738,10 +737,6 @@ def test_kpi_tiles_say_four_numbers_big_and_plainly():
     assert "✗ over budget" in kpi_frame_time_markdown(140.0, 100.0)
     assert kpi_frame_time_markdown(None, 100.0).startswith("## —")
 
-    moving = kpi_moving_markdown(9_214, 50_841, ghost_removal=True)
-    assert moving.startswith("## 9,214") and "50,841 this run" in moving
-    assert kpi_moving_markdown(5, 5, ghost_removal=False).startswith("## off")
-    assert "identical hash" in kpi_deterministic_markdown()
 
     header = header_markdown(1284, ghost_removal=True)
     assert "SIH26053" in header and "Chronicles.exe" in header and "frame 1,284" in header
@@ -789,3 +784,85 @@ def test_the_demo_layout_builds_for_every_schedule():
     for name in available_schedules():
         _demo_blueprint(load_schedule(name))
     _demo_blueprint(load_schedule("5/10/20/40"), background=(235, 238, 242))   # light test
+
+
+# the near-field panel -- green clear, yellow road anomaly, red object
+# --------------------------------------------------------------------------
+
+
+def test_proximity_config_resolves_class_names_through_the_one_table():
+    from vrgrid.dash._config import load_proximity
+    from vrgrid.grid.traversability import class_ids
+
+    cfg = load_proximity()
+    ids = class_ids()
+    assert cfg["outer_m"] == max(cfg["half_widths_m"])
+    assert set(cfg["person_ids"]) == {ids["person"], ids["bicyclist"], ids["motorcyclist"]}
+    assert ids["car"] not in cfg["person_ids"]          # a PARKED car is not red
+    assert set(cfg["surface_ids"]) == {ids["road"], ids["parking"]}
+
+
+def test_proximity_verdict_red_beats_yellow_beats_green():
+    from vrgrid.dash._config import (
+        PROXIMITY_ANOMALY,
+        PROXIMITY_CLEAR,
+        PROXIMITY_DYNAMIC,
+        load_proximity,
+        proximity_verdict,
+    )
+
+    cfg = load_proximity()
+    many, few = cfg["min_points"], cfg["min_points"] - 1
+    holes, pits = cfg["min_cells"], cfg["min_cells"] - 1
+    state, label = proximity_verdict(many, 4.2, holes, 6.0, cfg)
+    assert state == PROXIMITY_DYNAMIC and "4.2 m" in label
+    state, label = proximity_verdict(few, 4.2, holes, 6.0, cfg)   # a stray return is not an object
+    assert state == PROXIMITY_ANOMALY and "6.0 m" in label
+    assert proximity_verdict(few, 4.2, pits, 6.0, cfg)[0] == PROXIMITY_CLEAR
+    assert proximity_verdict(0, None, 0, None, cfg)[0] == PROXIMITY_CLEAR
+
+
+def test_near_field_panel_turns_red_for_a_person_and_green_without(tmp_path, monkeypatch):
+    from vrgrid.dash._config import load_proximity
+    from vrgrid.dash.pipeline_view import _PROX_RGB, PipelineView, _to_panel
+    from vrgrid.grid.traversability import class_ids
+
+    # Forward is up and left is left: vehicle +x -> screen -v, vehicle +y -> screen -u.
+    assert _to_panel([2.0], [0.0]).tolist() == [[-0.0, -2.0]]
+    assert _to_panel([0.0], [3.0]).tolist() == [[-3.0, -0.0]]
+
+    sched = load_schedule("5/10/20/40")
+    view = PipelineView(sched, spawn=False, save_path=str(tmp_path / "p.rrd"))
+    view._gpu.stop()
+    view._gpu = _FakeGpu(None)
+    calls = _spy_logs(monkeypatch)
+
+    def vehicle_colour():
+        tri = [a for p, a in calls if p == "proximity/vehicle"][-1]
+        rgba = tri.colors.as_arrow_array().to_pylist()[0]     # packed 0xRRGGBBAA
+        return (rgba >> 24 & 255, rgba >> 16 & 255, rgba >> 8 & 255)
+
+    f = _wall_frame(0)                     # ground disc + wall at 25 m: nothing near
+    view.log_frame(f)
+    assert vehicle_colour() == _PROX_RGB["clear"]
+
+    f = _wall_frame(1)
+    person = class_ids()["person"]
+    near = np.flatnonzero(np.hypot(*f.points_sensor[:, :2].T) < load_proximity()["outer_m"])
+    f.semantic[near[:load_proximity()["min_points"]]] = person
+    view.log_frame(f)
+    assert vehicle_colour() == _PROX_RGB["dynamic"]
+    objects = [a for p, a in calls if p == "proximity/objects"][-1]
+    assert len(objects.positions) == load_proximity()["min_points"]
+
+
+def test_proximity_readout_counts_points_and_cells_per_square():
+    from vrgrid.dash._config import load_proximity, proximity_readout_markdown
+
+    cfg = load_proximity()
+    md = proximity_readout_markdown("dynamic", "OBJECT 7.7 m", "nearest: **person** · moving",
+                                    [(5.0, 0, 0), (10.0, 1_402, 3)], cfg)
+    assert md.startswith("## ✗ OBJECT 7.7 m") and "person" in md
+    assert "| 5 m | 0 | 0 |" in md and "| 10 m | 1,402 | 3 |" in md
+    assert "object points" in md and "pothole cells" in md       # units, never "objects"
+    assert proximity_readout_markdown("clear", "CLEAR", "x", [], cfg).startswith("## ✓ CLEAR")

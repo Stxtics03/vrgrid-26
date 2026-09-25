@@ -34,20 +34,27 @@ import rerun as rr
 import rerun.blueprint as rrb
 from vrgrid.cell import CELL_BYTES, OCC_FREE, OCC_UNKNOWN
 from vrgrid.grid.confidence import drivable_confidence
-from vrgrid.grid.features import detect
+from vrgrid.grid.features import detect, detect_potholes
+from vrgrid.grid.fusion import unpack_class
+from vrgrid.grid.schedule import load_class_names
 
 from ._config import (
     NEAR_BUDGET_FRACTION,
+    PROXIMITY_ANOMALY,
+    PROXIMITY_CLEAR,
+    PROXIMITY_DYNAMIC,
+    PROXIMITY_LEVEL,
     blind_cone_radius_m,
     details_markdown,
     frame_budget_ms,
     header_markdown,
-    kpi_deterministic_markdown,
     kpi_frame_time_markdown,
     kpi_memory_markdown,
-    kpi_moving_markdown,
+    load_proximity,
     map_legend_markdown,
     playback_fps,
+    proximity_readout_markdown,
+    proximity_verdict,
     status_markdown,
     uniform_2_5d_baseline,
 )
@@ -219,6 +226,63 @@ _FEED_NEAR_BUDGET = NEAR_BUDGET_FRACTION
 
 _LEGEND_SPACING = 10.0
 
+# --- the near-field panel ------------------------------------------------------
+#
+# A top view of the car in its own frame, drawn like the near-field plot of the
+# original map figure: a metre grid with ticks, a square at each half-width in
+# `configs/proximity.yaml` (squares, like the map's rings), and the car as the
+# same triangle the 3D views draw -- an OUTLINE, so a pothole under it still
+# shows through. The triangle and the square the nearest hazard sits in take
+# the verdict's colour -- green clear,
+# yellow a road anomaly, red a moving object or a person -- and the outline's
+# label says which and how far, because red / green alone is the one pair a
+# deuteranope cannot tell apart.
+#
+# Screen axes: forward is UP and left is LEFT, as a driver reads a map. Rerun's
+# 2D view has +v pointing down, so vehicle (x, y) goes to screen (-y, -x).
+_PROX_RGB = {PROXIMITY_CLEAR: (0, 190, 120), PROXIMITY_ANOMALY: (240, 200, 40),
+             PROXIMITY_DYNAMIC: (235, 55, 55)}
+_PROX_RING_RGB = (120, 128, 140)       # a square with nothing in it
+_PROX_GRID_RGB = (48, 54, 64)
+_PROX_TEXT_RGB = (170, 176, 186)
+_PROX_STATIC_RGB = (95, 102, 112)      # what is there but is not a hazard
+_PROX_BLIND_RGB = _UNKNOWN_RGBA[:3]    # the blind cone is unknown, never clear
+_PROX_MAX_STATIC = 6000                # static points drawn, decimated beyond this
+
+
+def _to_panel(x_m, y_m) -> np.ndarray:
+    """Vehicle-frame `(x forward, y left)` -> 2D-view `(u, v)`, forward up."""
+    return np.stack([-np.asarray(y_m, np.float32), -np.asarray(x_m, np.float32)], axis=1)
+
+
+def _square(half_m: float) -> np.ndarray:
+    """A closed L-infinity ring of half-width `half_m` around the car."""
+    x = np.array([half_m, half_m, -half_m, -half_m, half_m])
+    y = np.array([half_m, -half_m, -half_m, half_m, half_m])
+    return _to_panel(x, y)
+
+
+def _circle(radius_m: float, n: int = 97) -> np.ndarray:
+    th = np.linspace(0.0, 2.0 * np.pi, n)
+    return _to_panel(radius_m * np.cos(th), radius_m * np.sin(th))
+
+
+def _prox_grid_step_m(outer_m: float) -> float:
+    """Grid and tick spacing: the inner radius's own scale, 5 m for a 10 m panel."""
+    return 5.0 if outer_m > 6.0 else 1.0
+
+
+def _prox_grid_half_m(prox) -> float:
+    """Half-width of the metre grid: the outer square, rounded up to a step."""
+    step = _prox_grid_step_m(prox["outer_m"])
+    return float(np.ceil(prox["outer_m"] / step) * step)
+
+
+def _prox_limit_m(prox) -> float:
+    """Half-width of the panel's view: the grid plus room for its tick labels,
+    so the outer square is never cut by the frame."""
+    return _prox_grid_half_m(prox) + 0.4 * _prox_grid_step_m(prox["outer_m"])
+
 
 def legend_items(schedule):
     """The Demo tab's one-row legend, `[(label, rgb), ...]`: every mark on the
@@ -287,14 +351,33 @@ def _demo_blueprint(schedule, background=_BACKGROUND_RGB):
     no_legend = rrb.PlotLegend(visible=False)
     budget = frame_budget_ms()
     uniform_mb = uniform_2_5d_baseline(schedule)["bytes"] / 1e6
+    prox = load_proximity()
+    lim = _prox_limit_m(prox)
     side = rrb.Vertical(
         rrb.TextDocumentView(name="VRgrid", origin="/panel/header"),
-        rrb.Grid(
+        rrb.Horizontal(
             rrb.TextDocumentView(name="Map memory", origin="/panel/kpi/memory"),
             rrb.TextDocumentView(name="Frame time", origin="/panel/kpi/frame_time"),
-            rrb.TextDocumentView(name="Moving objects", origin="/panel/kpi/moving"),
-            rrb.TextDocumentView(name="Determinism", origin="/panel/kpi/deterministic"),
-            grid_columns=2,
+        ),
+        # The top view is square, so on its own it left empty bands either
+        # side; the readout and the hazard timeline fill the other half.
+        rrb.Horizontal(
+            rrb.Spatial2DView(
+                name=f"Near field · {' and '.join(f'{r:g}' for r in prox['half_widths_m'])} m",
+                origin="/proximity",
+                visual_bounds=rrb.VisualBounds2D(x_range=[-lim, lim], y_range=[-lim, lim]),
+                background=rrb.Background(color=list(background)),
+            ),
+            rrb.Vertical(
+                rrb.TextDocumentView(name="Nearest hazard", origin="/panel/proximity"),
+                rrb.TimeSeriesView(
+                    name="Hazard · top red object · middle yellow anomaly · bottom green clear "
+                         "· click to jump",
+                    origin="/stats/hazard", plot_legend=no_legend,
+                    axis_y=rrb.ScalarAxis(range=(-0.5, 2.5))),
+                row_shares=[1.3, 1],
+            ),
+            column_shares=[1.1, 1],
         ),
         # The strongest picture: a flat VRgrid line against the uniform grid it replaces.
         rrb.TimeSeriesView(name="Memory MB · VRgrid vs uniform grid · click to jump",
@@ -303,7 +386,9 @@ def _demo_blueprint(schedule, background=_BACKGROUND_RGB):
         rrb.TimeSeriesView(name="Frame time ms · green under budget · red over · click to jump",
                            origin="/stats/frame_ms", plot_legend=no_legend,
                            axis_y=rrb.ScalarAxis(range=(0.0, 2.5 * budget))),
-        row_shares=[1.2, 3.0, 2.2, 2.2],       # 0.8 cut the header's badge line
+        # 0.8 cut the header's badge line. The near field gets the most: it is
+        # the one panel that is a picture, and a small one reads as a dot.
+        row_shares=[1.2, 1.6, 5.0, 1.8, 1.8],
     )
     n_items = len(legend_items(schedule))
     legend = rrb.Spatial2DView(
@@ -491,8 +576,17 @@ class PipelineView:
             media_type=rr.MediaType.MARKDOWN), static=True)
         rr.log("panel/details", rr.TextDocument(details_markdown(schedule),
                                                 media_type=rr.MediaType.MARKDOWN), static=True)
-        rr.log("panel/kpi/deterministic", rr.TextDocument(
-            kpi_deterministic_markdown(), media_type=rr.MediaType.MARKDOWN), static=True)
+        # The near-field panel: its static frame now, the verdict every frame.
+        # Road anomalies are world-frame cell centres, refreshed with the map.
+        self._prox = load_proximity()
+        self._class_names = load_class_names()
+        self._anomaly_xy = np.zeros((0, 2), np.float64)
+        self._log_proximity_frame()
+        # The hazard timeline: one point series per state, in its colour. A
+        # frame logs to its own state's series only, so each row is one colour.
+        for st, rgb in _PROX_RGB.items():
+            rr.log(f"stats/hazard/{st}", rr.SeriesPoints(
+                colors=[rgb], names=[st], markers=["square"], marker_sizes=[3.0]), static=True)
         items = legend_items(schedule)
         xs = np.arange(len(items), dtype=np.float32) * _LEGEND_SPACING
         rr.log("panel/legend_swatches",
@@ -563,6 +657,148 @@ class PipelineView:
             rr.LineStrips3D([strip.astype(np.float32)], colors=[_BLIND_SPOT_RGB], radii=0.05),
             static=True,
         )
+
+    def _log_proximity_frame(self):
+        """The near-field panel's fixed parts, logged once: the metre grid, its
+        tick labels, the blind cone and a label on each square. The squares and
+        the car are per frame -- they carry the verdict's colour."""
+        cfg = self._prox
+        step = _prox_grid_step_m(cfg["outer_m"])
+        g = _prox_grid_half_m(cfg)
+        ticks = np.arange(-g, g + 0.5 * step, step, dtype=np.float32)
+        lines = ([np.array([[t, -g], [t, g]], np.float32) for t in ticks]
+                 + [np.array([[-g, t], [g, t]], np.float32) for t in ticks])
+        rr.log("proximity/grid", rr.LineStrips2D(lines, colors=[_PROX_GRID_RGB], radii=0.03,
+                                                 draw_order=1.0), static=True)
+        # Screen u is -y and screen v is -x, so each tick is labelled with the
+        # vehicle coordinate it stands for: y along the bottom, x up the side.
+        pad = 0.22 * step
+        pos = np.concatenate([np.stack([ticks, np.full_like(ticks, g + pad)], axis=1),
+                              np.stack([np.full_like(ticks, -g - pad), ticks], axis=1)])
+        text = [f"{-t:g}" for t in ticks] + [f"{-t:g}" for t in ticks]
+        rr.log("proximity/ticks", rr.Points2D(pos, radii=0.01, colors=[_PROX_TEXT_RGB],
+                                              labels=text, show_labels=True, draw_order=2.0),
+               static=True)
+        rr.log("proximity/axes", rr.Points2D(
+            np.array([[g - 0.5 * step, g + 0.3 * step], [-g - 0.3 * step, -g + 0.5 * step]],
+                     np.float32),
+            radii=0.01, colors=[_PROX_TEXT_RGB], labels=["y (m) · left +", "x (m) · forward +"],
+            show_labels=True, draw_order=2.0), static=True)
+        blind = blind_cone_radius_m()
+        rr.log("proximity/blind_cone", rr.LineStrips2D(
+            [_circle(blind)], colors=[_PROX_BLIND_RGB], radii=0.06, draw_order=4.0),
+            static=True)
+        # Each square's half-width on its front-right corner.
+        corner = np.array(cfg["half_widths_m"], np.float32)
+        rr.log("proximity/ring_labels", rr.Points2D(
+            _to_panel(corner, -corner), radii=0.01, colors=[_PROX_TEXT_RGB],
+            labels=[f"{r:g} m" for r in cfg["half_widths_m"]], show_labels=True,
+            draw_order=6.0),
+            static=True)
+
+    def _refresh_anomalies(self):
+        """§7.4 potholes on a road surface, inside the rings that reach the
+        outer square, as world-frame cell centres. Called with each map redraw:
+        ~110 ms on ring 0 alone, so never every frame (see proximity.yaml)."""
+        cfg, th = self._prox, self.engine.thresholds
+        xy = []
+        inner_m = 0.0
+        for level, ring in enumerate(self.engine.sched.rings):
+            if inner_m >= cfg["outer_m"]:
+                break                  # this ring starts outside the square
+            inner_m = ring.half_width_m
+            layout, buf = self.engine.handle.rings[level], self.engine.buffers[level]
+            holes = detect_potholes(self.engine.handle.grid,
+                                    slice(layout.offset, layout.offset + layout.slots),
+                                    layout.side, ring.cell_m, th, (buf.x0, buf.y0))
+            if not len(holes):
+                continue
+            flat = self._flat(level, holes.slot)
+            cls, _ = unpack_class(self.engine.handle.grid["semantic_class"][flat])
+            flat = flat[np.isin(cls, cfg["surface_ids"])]
+            x, y, _ = self._centres_world(flat)
+            xy.append(np.stack([x, y], axis=1))
+        self._anomaly_xy = np.concatenate(xy) if xy else np.zeros((0, 2), np.float64)
+
+    def _log_proximity(self, frame, yaw: float):
+        """The near-field verdict for this frame, and the picture behind it.
+
+        Moving points and people come from THIS scan, in the sensor frame, so
+        red is never late. Road anomalies come from the map, as of its last
+        redraw, turned into the vehicle frame with this frame's pose."""
+        cfg = self._prox
+        outer = cfg["outer_m"]
+        px, py = frame.points_sensor[:, 0], frame.points_sensor[:, 1]
+        r = np.hypot(px, py)                           # reported: how far
+        zone = np.maximum(np.abs(px), np.abs(py))      # decides: which square
+        near = zone <= outer
+        dynamic = np.asarray(frame.moving, bool) | np.isin(frame.semantic, cfg["person_ids"])
+        hazard = near & dynamic
+        static = near & ~dynamic & ~np.asarray(frame.ground, bool)
+        n_dyn = int(hazard.sum())
+        near_dyn = float(r[hazard].min()) if n_dyn else None
+        zone_dyn = float(zone[hazard].min()) if n_dyn else None
+
+        ax = ay = np.zeros(0)
+        if len(self._anomaly_xy):
+            d = self._anomaly_xy - np.asarray(frame.vehicle_xyz_world[:2], np.float64)
+            c, s = np.cos(yaw), np.sin(yaw)
+            ax, ay = c * d[:, 0] + s * d[:, 1], -s * d[:, 0] + c * d[:, 1]
+            inside = np.maximum(np.abs(ax), np.abs(ay)) <= outer
+            ax, ay = ax[inside], ay[inside]
+        n_anom = len(ax)
+        near_anom = float(np.hypot(ax, ay).min()) if n_anom else None
+        zone_anom = float(np.maximum(np.abs(ax), np.abs(ay)).min()) if n_anom else None
+
+        state, label = proximity_verdict(n_dyn, near_dyn, n_anom, near_anom, cfg)
+        rgb = _PROX_RGB[state]
+
+        # The readout and the timeline beside the top view.
+        if state == PROXIMITY_DYNAMIC:
+            i = np.flatnonzero(hazard)[np.argmin(r[hazard])]
+            cls = int(frame.semantic[i])
+            name = self._class_names[cls] if 0 <= cls < len(self._class_names) else "unlabelled"
+            what = f"nearest: **{name}** · {'moving' if frame.moving[i] else 'not moving'}"
+        elif state == PROXIMITY_ANOMALY:
+            what = "nearest: **pothole** on the road surface (math §7.4)"
+        else:
+            what = f"nothing seen within {outer:g} m"
+        a_zone = np.maximum(np.abs(ax), np.abs(ay))
+        zones = [(hw, int((hazard & (zone <= hw)).sum()), int((a_zone <= hw).sum()))
+                 for hw in cfg["half_widths_m"]]
+        rr.log("panel/proximity", rr.TextDocument(
+            proximity_readout_markdown(state, label, what, zones, cfg),
+            media_type=rr.MediaType.MARKDOWN))
+        rr.log(f"stats/hazard/{state}", rr.Scalars(PROXIMITY_LEVEL[state]))
+        nearest = {PROXIMITY_DYNAMIC: zone_dyn, PROXIMITY_ANOMALY: zone_anom}.get(state)
+        # The smallest square the nearest hazard is inside takes the colour;
+        # clear, every square is green.
+        lit = next((hw for hw in cfg["half_widths_m"] if nearest is not None and nearest <= hw),
+                   None)
+        for hw in cfg["half_widths_m"]:
+            on = state == PROXIMITY_CLEAR or hw == lit
+            rr.log(f"proximity/rings/r_{hw:g}m", rr.LineStrips2D(
+                [_square(hw)], colors=[rgb if on else _PROX_RING_RGB],
+                radii=0.12 if on else 0.06, draw_order=5.0))
+
+        keep = np.flatnonzero(static)
+        if len(keep) > _PROX_MAX_STATIC:
+            keep = keep[:: -(-len(keep) // _PROX_MAX_STATIC)]
+        rr.log("proximity/static", rr.Points2D(_to_panel(px[keep], py[keep]), radii=0.05,
+                                               colors=[_PROX_STATIC_RGB], draw_order=10.0))
+        rr.log("proximity/anomalies", rr.Points2D(
+            _to_panel(ax, ay), radii=0.12, colors=[_PROX_RGB[PROXIMITY_ANOMALY]],
+            draw_order=20.0))
+        rr.log("proximity/objects", rr.Points2D(
+            _to_panel(px[hazard], py[hazard]), radii=0.1, colors=[_PROX_RGB[PROXIMITY_DYNAMIC]],
+            draw_order=30.0))
+
+        # The 3D views' "you are here" triangle, same shape and size, as an
+        # outline only: a pothole or a person the car is over stays visible.
+        tri = np.array(_MARKER_VERTS_M + _MARKER_VERTS_M[:1], np.float32)
+        rr.log("proximity/vehicle", rr.LineStrips2D(
+            [_to_panel(tri[:, 0], tri[:, 1])], colors=[rgb], radii=0.12,
+            labels=[label], show_labels=True, draw_order=40.0))
 
     def _cell_m_per_slot(self, slots: np.ndarray) -> np.ndarray:
         """Cell edge length (m) for each occupied slot, from the ring it lives
@@ -856,10 +1092,6 @@ class PipelineView:
         rr.log("panel/kpi/frame_time", rr.TextDocument(
             kpi_frame_time_markdown(timing["total"] if timing else None, self._budget_ms),
             media_type=md))
-        rr.log("panel/kpi/moving", rr.TextDocument(
-            kpi_moving_markdown(None if counters is None else int(counters.cleared),
-                                self._run["cleared"] if tracked else None,
-                                ghost_removal=self.ghost_removal), media_type=md))
 
     def _log_feed(self, frame, counters, timing):
         """One coloured status line per map-redraw window, plus an immediate red
@@ -905,6 +1137,7 @@ class PipelineView:
         self._log_occupied()   # also refreshes engine.occ_state
         self._log_free()
         self._log_unknown()
+        self._refresh_anomalies()   # the near-field panel's yellow
 
     def finish(self):
         """Call once after the loop: redraws the map and the §7.4 / §7.5
@@ -953,6 +1186,7 @@ class PipelineView:
             translation=frame.vehicle_xyz_world.astype(np.float32),
             rotation=rr.RotationAxisAngle(axis=[0, 0, 1], angle=float(yaw)),
         ))
+        self._log_proximity(frame, float(yaw))
         # The chase camera's frame: the vehicle's position, no rotation. The map
         # view's origin (`_demo_blueprint`), so the camera goes where the car goes.
         rr.log("world/follow", rr.Transform3D(

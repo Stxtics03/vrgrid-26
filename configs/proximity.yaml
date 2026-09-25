@@ -1,0 +1,36 @@
+# Dashboard near-field panel: the top view around the car, green / yellow / red.
+# DISPLAY ONLY -- nothing in the map, the metrics or the tests of the grid reads
+# this file. It is here, not inline, because CLAUDE.md keeps every threshold in
+# configs/, and it is a separate file so the frozen thresholds.yaml is untouched.
+
+# The two SQUARES drawn around the car: half-widths in metres, vehicle frame,
+# from the sensor. Squares, not circles, for the reason the map's own rings are:
+# membership is the L-infinity distance max(|x|, |y|), as in `lattice.ring_of`
+# (math §6.1 eq. 18). The outer one is the zone the verdict looks at. 10 m is
+# ring 0's half-width in 5_10_20_40, so the outer square IS ring 0 and every
+# anomaly cell inside it is a 5 cm cell.
+half_widths_m: [5.0, 10.0]
+
+# RED: something that moves, or a person, inside the outer square.
+#   * any point the scan's motion flag marks as moving (SemanticKITTI moving-*),
+#     whatever its class -- a moving car is red, a PARKED car is not. Measured on
+#     seq 00 frames 0-199, car-class points inside 10 m number 2,600-18,300 on
+#     EVERY frame (parked cars line the street), so "car = red" is red forever.
+#   * people and riders, moving or not: a standing pedestrian is still a hazard.
+dynamic:
+  person_classes: [person, bicyclist, motorcyclist]
+  min_points: 3            # fewer is a stray return, not an object
+
+# YELLOW: road anomalies -- math §7.4 potholes -- inside the outer square.
+#   * detected on ring 0 only, every map redraw (MAP_INTERVAL frames): the
+#     detector is ~110 ms on ring 0 (1,137 ms over all four rings), so it cannot
+#     run every frame.
+#   * only on cells whose class is a road surface. Unfiltered, seq 00 frames
+#     0-199 had pothole cells inside 10 m on 39 of 40 samples -- kerb-line
+#     drop-offs and the space under parked cars, which §7.4's own comments name.
+#   * min_cells: a 5 cm pothole cell is 25 cm^2; 20 cells is ~0.05 m^2, about a
+#     22 cm square. Road-only, 10 m, seq 00: 0-17 cells on most samples, 48-55
+#     around frames 54-64.
+anomaly:
+  surface_classes: [road, parking]
+  min_cells: 20
