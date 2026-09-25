@@ -467,7 +467,10 @@ def test_live_numbers_table_shows_this_frame_beside_the_whole_run():
         ground_method="patchworkpp")
     assert "### Frame 1,284" in md and "ghost removal ON" in md and "Patchwork++" in md
     assert "| Frame time | 152 ms · 6.6 fps | 152 ms · 6.6 fps |" in md
-    assert "| Moving-object cells cleared | 9,214 | 50,841 |" in md
+    # the pipeline (what the budget is for) apart from the dashboard's drawing
+    assert "| Pipeline (perception + map) | 139 ms · 7.2 fps | 139 ms · 7.2 fps |" in md
+    assert "| Dashboard drawing | 13 ms | 13 ms |" in md
+    assert "| Cells cleared (seen through) | 9,214 | 50,841 |" in md
     assert "| Cells kept (seen this scan) | 8,057 | 56,107 |" in md
     assert "| Skipped by candidate cap | 0 | 0 |" in md           # no flag when it is 0
     assert "Ghost cells" not in md and "guard" not in md
@@ -479,8 +482,9 @@ def test_live_numbers_table_shows_this_frame_beside_the_whole_run():
     assert "Measured" not in md and "Dense" not in md
 
     off = status_markdown(5, 10, sched, ghost_removal=False)
-    assert "ghost removal OFF" in off and "| Moving-object cells cleared | off | off |" in off
+    assert "ghost removal OFF" in off and "| Cells cleared (seen through) | off | off |" in off
     assert "| Frame time | — | — |" in off                       # no timing: a dash, not a zero
+    assert "| Pipeline (perception + map) | — | — |" in off
     capped = dict(run, truncated=7)
     assert "Skipped by candidate cap ⚑" in status_markdown(5, 10, sched, ghost_removal=True,
                                                            run=capped)
@@ -507,6 +511,8 @@ def test_details_tab_follows_the_deck_and_derives_every_figure():
     assert f"| Blind spot radius | {blind_cone_radius_m():.2f} m — no ground seen closer |" in md
     assert "| 30 cm pothole | detectable up to 8.3 m |" in md
     assert "| Pedestrian motion | detectable up to 25 m |" in md
+    # refinement is not in the live view, and the tab says so rather than leaving a gap
+    assert "evaluated offline in the harness" in md
     # plain wording, not internal jargon
     assert "| Accuracy loss when merging, ρ (1.0 = none) |" in md
     assert "| Cleanup failures | 0 of 4,071 frames (seq 08) |" in md
@@ -578,24 +584,29 @@ def test_demo_panels_and_graphs_update_every_frame(tmp_path, monkeypatch):
     assert len(sent) == 1
     for path in ("panel/status", "panel/header", "panel/kpi/memory", "panel/kpi/frame_time",
                  "proximity/vehicle", "proximity/objects",     # the near-field verdict
-                 "panel/proximity", "stats/hazard/clear",      # its readout and timeline
-                 "stats/frame_ms/under", "stats/frame_ms/over", "stats/frame_ms/budget",
-                 "stats/memory_mb/in_use", "stats/memory_mb/allocation", "stats/memory_mb/uniform",
-                 "stats/moving/cleared",
+                 "stats/cleanup/cleared", "stats/cleanup/kept",
                  "world/follow"):              # the chase camera moves every frame
         assert count(path) == 3, path
     stats = {p for p, _ in calls if p.startswith("stats/")}
     assert not [p for p in stats if p.startswith("stats/gpu_pct")]   # no GPU: no GPU lines
     assert not [p for p in stats if p.startswith("stats/ghosts")]    # the old two-line chart is gone
+    assert not [p for p in stats if p.startswith("stats/memory_mb")]  # the flat graph is gone too
+    # the hazard timeline drew the whole recording -- hazards still to come -- so it is gone
+    assert not [p for p in stats if p.startswith("stats/hazard")]
+    # the frame-time graph's slot is the GPU's; the tile, table and feed keep frame time
+    assert not [p for p in stats if p.startswith("stats/frame_ms")]
     # map_interval=2 over 3 timed frames: one full window, so exactly one feed line
     feed = [a for p, a in calls if p == "panel/feed/frames"]
     assert len(feed) == 1 and isinstance(feed[0], rr.TextLog)
     assert view._run["n"] == 3 and view._run["truncated"] == 0
     assert view._run["perception"] == 180.0 and view._run["peak_occupied"] > 0
     assert count("world/trajectory") == 1          # frames 0 and 2 redraw; frame 0 has 1 point
+    assert count("panel/rings") == 2               # with the map, not every frame
+    assert count("panel/near_occupancy") == 2
+    assert count("panel/proximity") == 0           # the nearest-hazard readout is gone
 
     view.log_frame(_wall_frame(3))           # no counters or timing: tiles still update, no blank
-    assert count("panel/kpi/frame_time") == 4 and count("stats/frame_ms/under") == 3
+    assert count("panel/kpi/frame_time") == 4
     view.finish()
     assert count("world/trajectory") == 2
 
@@ -726,7 +737,9 @@ def test_kpi_tiles_say_two_numbers_big_and_plainly():
 
     sched = load_schedule("5/10/20/40")
     md = kpi_memory_markdown(257_500, sched)                  # 257,500 cells x 12 B = 3.09 MB
-    assert md.startswith("## 3.09 MB") and "of 8.94 MB fixed" in md
+    assert md.startswith("## 8.94 MB fixed")                  # the allocation is the headline
+    assert "**21.5× smaller** than uniform 5 cm (192 MB)" in md   # same figure as Details
+    assert "3.09 MB in use" in md
     bar = md.split("`")[1]
     assert len(bar) == 16 and bar.count("█") == 6             # 34.6% of 16 blocks
     assert kpi_memory_markdown(1, sched).split("`")[1].count("█") == 1   # never empty for a live map
@@ -743,17 +756,12 @@ def test_kpi_tiles_say_two_numbers_big_and_plainly():
     assert "`GHOST REMOVAL: ON`" in header and "`LABELS: GT`" in header
     assert "Patchwork" not in header                           # ground method lives in Details
     assert "`GHOST REMOVAL: OFF`" in header_markdown(1, ghost_removal=False)
+    assert "RINGS" not in header                               # no schedule, no badge
+    assert "`RINGS: 5/10/20/40 cm`" in header_markdown(1, ghost_removal=True, schedule=sched)
+    assert "`RINGS: 5/10/50 cm`" in header_markdown(
+        1, ghost_removal=True, schedule=load_schedule("5/10/50"))
 
 
-def test_frame_time_graph_splits_into_under_and_over_budget_lines():
-    from vrgrid.dash.pipeline_view import _split_frame_time
-
-    under, over = _split_frame_time(60.0, 100.0)
-    assert under == 60.0 and np.isnan(over)
-    under, over = _split_frame_time(140.0, 100.0)
-    assert np.isnan(under) and over == 140.0
-    under, over = _split_frame_time(100.0, 100.0)            # at the budget is within it
-    assert under == 100.0 and np.isnan(over)
 
 
 def test_legend_is_a_row_of_real_colour_swatches(tmp_path, monkeypatch):
@@ -764,12 +772,17 @@ def test_legend_is_a_row_of_real_colour_swatches(tmp_path, monkeypatch):
     items = legend_items(sched)
     labels = [t for t, _ in items]
     assert labels[:3] == ["height: low", "mid", "high"]
-    assert "rings 5/10/20/40 cm" in labels and "rings 5/10/50 cm" in [
-        t for t, _ in legend_items(load_schedule("5/10/50"))]
-    assert {"moving", "car", "path", "blind spot", "free space", "unknown"} <= set(labels)
+    assert {"rings", "moving", "car", "path", "blind spot", "free space", "unknown"} <= set(labels)
     # the swatches are the map's own colours, so the legend cannot drift from the map
     from vrgrid.dash.palettes import GHOST_RGB
     assert dict(items)["moving"] == tuple(GHOST_RGB)
+    # translucent layers as they show over the background, not at full strength
+    from vrgrid.dash.pipeline_view import _BACKGROUND_RGB, _FREE_RGBA, _PROX_RGB
+    free = dict(items)["free space"]
+    assert free != _FREE_RGBA[:3]
+    assert all(min(b, c) <= f <= max(b, c) for f, b, c in zip(free, _BACKGROUND_RGB, _FREE_RGBA))
+    # the blind spot is unknown ground, never the near-field panel's hazard red
+    assert dict(items)["blind spot"] != _PROX_RGB["dynamic"]
 
     calls = _spy_logs(monkeypatch)
     PipelineView(sched, spawn=False, save_path=str(tmp_path / "legend.rrd"))
@@ -784,6 +797,7 @@ def test_the_demo_layout_builds_for_every_schedule():
     for name in available_schedules():
         _demo_blueprint(load_schedule(name))
     _demo_blueprint(load_schedule("5/10/20/40"), background=(235, 238, 242))   # light test
+    _demo_blueprint(load_schedule("5/10/20/40"), live=True)      # a live run follows the data
 
 
 # the near-field panel -- green clear, yellow road anomaly, red object
@@ -856,13 +870,210 @@ def test_near_field_panel_turns_red_for_a_person_and_green_without(tmp_path, mon
     assert len(objects.positions) == load_proximity()["min_points"]
 
 
-def test_proximity_readout_counts_points_and_cells_per_square():
-    from vrgrid.dash._config import load_proximity, proximity_readout_markdown
+def test_ring_cells_panel_counts_each_ring_from_the_schedule():
+    from vrgrid.dash._config import ring_cells_markdown
+
+    sched = load_schedule("5/10/20/40")
+    md = ring_cells_markdown([600, 300, 100, 0], sched)
+    assert "5 cm  ███░░  60%" in md
+    assert "10 cm ██░░░  30%" in md
+    assert "20 cm █░░░░  10%" in md                  # a small share never shows empty
+    assert "40 cm ░░░░░   0%" in md                  # an empty ring does
+    assert "1,000 occupied" in md
+    # cell sizes come from the schedule, never typed in
+    assert "50 cm" in ring_cells_markdown([1, 1, 1], load_schedule("5/10/50"))
+    assert ring_cells_markdown([], sched, has_map=False) == "back end off"
+    assert "0 occupied" in ring_cells_markdown([0, 0, 0, 0], sched)       # no divide by zero
+
+
+def test_side_panels_fit_their_column():
+    """The two panels beside the near-field view get ~170 pt on the demo
+    laptop. Every line in their code blocks stays inside PANEL_MAX_CHARS, for
+    every schedule -- the table they replaced was ~245 pt wide and clipped."""
+    from vrgrid.dash._config import (
+        PANEL_MAX_CHARS,
+        near_occupancy_markdown,
+        ring_cells_markdown,
+    )
+
+    docs = [near_occupancy_markdown(123_456, 98_765, 4_321, load_schedule("5/10/20/40").rings[0])]
+    for name in available_schedules():
+        sched = load_schedule(name)
+        docs.append(ring_cells_markdown([999_999] * len(sched.rings), sched))
+    for md in docs:
+        lines = md.split("```")[1].strip("\n").splitlines()
+        assert lines and max(len(line) for line in lines) <= PANEL_MAX_CHARS, md
+        bar_starts = {min(i for i, ch in enumerate(line) if ch in "█░") for line in lines}
+        assert len(bar_starts) == 1, md                   # the bars line up
+
+
+def test_graph_lines_never_wear_a_status_colour():
+    """The feed's green / yellow / red mean OK / near / over. A graph line in
+    one of them reads as a verdict -- both graph lines used to be the OK green."""
+    from vrgrid.dash.pipeline_view import (
+        _FEED_BAD_RGB,
+        _FEED_OK_RGB,
+        _FEED_WARN_RGB,
+        _series_styles,
+    )
+
+    status = {_FEED_OK_RGB, _FEED_WARN_RGB, _FEED_BAD_RGB}
+    styles = _series_styles(load_schedule("5/10/20/40"))
+    assert not status & {tuple(c[:3]) for _, c, _ in styles.values()}
+    for graph in {p.rsplit("/", 1)[0] for p in styles}:   # no two lines on a graph alike
+        looks = [(tuple(c), w) for p, (_, c, w) in styles.items() if p.startswith(graph + "/")]
+        assert len(set(looks)) == len(looks), graph
+    # each frame faint and thin, its average solid and bold, in the same hue
+    (_, c_raw, w_raw), (_, c_avg, w_avg) = (styles["stats/gpu_pct/usage"],
+                                            styles["stats/gpu_pct/usage_trend"])
+    assert c_raw[:3] == c_avg[:3] and len(c_raw) == 4 and c_raw[3] < 128
+    assert w_raw < w_avg
+    # the cleanup graph compares two outcomes: two solid lines, two hues
+    cleared, kept = styles["stats/cleanup/cleared"], styles["stats/cleanup/kept"]
+    assert cleared[1][:3] != kept[1][:3] and len(cleared[1]) == len(kept[1]) == 3
+
+
+def test_cleanup_graph_is_cleared_and_kept_running_averages_in_thousands(tmp_path, monkeypatch):
+    from vrgrid.dash._config import playback_fps
+    from vrgrid.dash.pipeline_view import TREND_S, PipelineView
+
+    view = PipelineView(load_schedule("5/10/20/40"), spawn=False,
+                        save_path=str(tmp_path / "trend.rrd"))
+    view._gpu.stop()
+    view._gpu = _FakeGpu(None)
+    calls = _spy_logs(monkeypatch)
+
+    class C:        # a StepCounters stand-in: only what _log_stats reads
+        truncated = 0
+
+        def __init__(self, cleared, protected):
+            self.cleared, self.protected = cleared, protected
+
+    n = round(TREND_S * playback_fps())
+    cleared = [2_000 * (i + 1) for i in range(n + 3)]
+    kept = [9_000 - 100 * i for i in range(n + 3)]
+    for i, (c, k) in enumerate(zip(cleared, kept)):
+        view.log_frame(_wall_frame(i), counters=C(c, k))
+
+    def last(path):
+        return [a for p, a in calls if p == path][-1].scalars.as_arrow_array().to_pylist()[0]
+
+    assert last("stats/cleanup/cleared") == pytest.approx(np.mean(cleared[-n:]) / 1e3)
+    assert last("stats/cleanup/kept") == pytest.approx(np.mean(kept[-n:]) / 1e3)
+    assert not [p for p, _ in calls if p.startswith("stats/moving")]    # the old series
+
+
+def test_near_occupancy_panel_keeps_unknown_apart_from_free():
+    from vrgrid.dash._config import near_occupancy_markdown
+
+    ring0 = load_schedule("5/10/20/40").rings[0]
+    md = near_occupancy_markdown(200, 600, 200, ring0)
+    assert "occupied █░░░░  20%" in md
+    assert "free     ███░░  60%" in md
+    assert "unknown  █░░░░  20%" in md                # its own row, never free
+    assert "unknown ≠ free" in md
+    assert "free     ░░░░░   0%" in near_occupancy_markdown(0, 0, 0, ring0)
+    assert near_occupancy_markdown(0, 0, 0, ring0, has_map=False) == "back end off"
+
+
+def test_near_field_labels_do_not_overlap():
+    """Every label on the near-field panel, as a text box at the panel's
+    scale, meets no other and fits the view. The same labels as before --
+    only their positions moved: the axis captions sat among the tick numbers,
+    and the bottom-left corner's two numbers sat a metre apart.
+
+    Box size: `_LABEL_CHAR_M` x `_LABEL_LINE_M`, the panel's own estimate.
+    The car's label is the longest it gets, centred on the car."""
+    from vrgrid.dash._config import load_proximity
+    from vrgrid.dash.pipeline_view import (
+        _LABEL_CHAR_M,
+        _LABEL_LINE_M,
+        _prox_bounds,
+        _prox_grid_half_m,
+        _prox_text_layout,
+    )
 
     cfg = load_proximity()
-    md = proximity_readout_markdown("dynamic", "OBJECT 7.7 m", "nearest: **person** · moving",
-                                    [(5.0, 0, 0), (10.0, 1_402, 3)], cfg)
-    assert md.startswith("## ✗ OBJECT 7.7 m") and "person" in md
-    assert "| 5 m | 0 | 0 |" in md and "| 10 m | 1,402 | 3 |" in md
-    assert "object points" in md and "pothole cells" in md       # units, never "objects"
-    assert proximity_readout_markdown("clear", "CLEAR", "x", [], cfg).startswith("## ✓ CLEAR")
+    char_m, line_m = _LABEL_CHAR_M, _LABEL_LINE_M
+    boxes = []
+    for pos, texts in _prox_text_layout(cfg).values():
+        boxes += [(float(u), float(v), t) for (u, v), t in zip(pos, texts)]
+    assert [t for *_, t in boxes].count("x (m) · forward +") == 1      # nothing dropped
+    assert {"5 m", "10 m", "y (m) · left +"} <= {t for *_, t in boxes}
+    boxes.append((0.0, 0.0, "MOTORCYCLIST 9.9 m · held"))
+
+    def extent(b):
+        u, v, t = b
+        return u - len(t) * char_m / 2, u + len(t) * char_m / 2, v - line_m / 2, v + line_m / 2
+
+    (u0, u1), (v0, v1) = _prox_bounds(cfg)
+    for i, a in enumerate(boxes):
+        a0, a1, a2, a3 = extent(a)
+        assert u0 <= a0 and a1 <= u1 and v0 <= a2 and a3 <= v1, a[2]   # not clipped
+        for b in boxes[i + 1:]:
+            b0, b1, b2, b3 = extent(b)
+            assert a1 <= b0 or b1 <= a0 or a3 <= b2 or b3 <= a2, (a[2], b[2])
+
+    # No empty band: every side of the view ends within a label's reach of the
+    # grid. The symmetric box it replaced left 3.5 m of nothing on the right.
+    g = _prox_grid_half_m(cfg)
+    assert u1 - g < 2.0 and -g - u0 < 4.0 and -g - v0 < 3.0 and v1 - g < 4.0
+    assert 0.9 < (u1 - u0) / (v1 - v0) < 1.1                    # about square, like the grid
+
+
+def test_ring_cells_panel_total_is_the_memory_tiles_count(tmp_path, monkeypatch):
+    from vrgrid.dash.pipeline_view import PipelineView
+    from vrgrid.run.engine import MapEngine
+
+    sched = load_schedule("5/10/20/40")
+    engine = MapEngine(sched, ghost_removal=True)
+    view = PipelineView(sched, spawn=False, save_path=str(tmp_path / "rings.rrd"), engine=engine)
+    view._gpu.stop()
+    view._gpu = _FakeGpu(None)
+    calls = _spy_logs(monkeypatch)
+    f = _wall_frame(0)
+    view.log_frame(f, counters=engine.step(f))
+    md = [a for p, a in calls if p == "panel/rings"][-1].text.as_arrow_array().to_pylist()[0]
+    assert view._last_occupied_n > 0
+    assert md.endswith(f"{view._last_occupied_n:,} occupied")
+
+
+def test_near_field_holds_a_hazard_but_never_shows_it_late(tmp_path, monkeypatch):
+    """seq 00's cyclist 2.5 m ahead gives 0-14 points a scan, straddling
+    min_points: without the hold the panel blinked red/green 28 times in 160
+    frames. Red must still appear on the frame it is seen."""
+    from vrgrid.dash._config import load_proximity
+    from vrgrid.dash.pipeline_view import _PROX_RGB, PipelineView
+    from vrgrid.grid.traversability import class_ids
+
+    cfg = load_proximity()
+    assert cfg["hold_frames"] > 1
+    view = PipelineView(load_schedule("5/10/20/40"), spawn=False,
+                        save_path=str(tmp_path / "hold.rrd"))
+    view._gpu.stop()
+    view._gpu = _FakeGpu(None)
+    calls = _spy_logs(monkeypatch)
+
+    def shown():
+        tri = [a for p, a in calls if p == "proximity/vehicle"][-1]
+        rgba = tri.colors.as_arrow_array().to_pylist()[0]
+        return (rgba >> 24 & 255, rgba >> 16 & 255, rgba >> 8 & 255)
+
+    def frame(i, person):
+        f = _wall_frame(i)
+        if person:
+            near = np.flatnonzero(np.hypot(*f.points_sensor[:, :2].T) < cfg["outer_m"])
+            f.semantic[near[:cfg["min_points"]]] = class_ids()["person"]
+        return f
+
+    view.log_frame(frame(0, False))
+    assert shown() == _PROX_RGB["clear"]
+    view.log_frame(frame(1, True))
+    assert shown() == _PROX_RGB["dynamic"]                    # on the frame it is seen
+    for i in range(2, 1 + cfg["hold_frames"]):                # lost for hold_frames - 1
+        view.log_frame(frame(i, False))
+        assert shown() == _PROX_RGB["dynamic"], i
+    tri = [a for p, a in calls if p == "proximity/vehicle"][-1]
+    assert tri.labels.as_arrow_array().to_pylist()[0].endswith(" · held")   # says so
+    view.log_frame(frame(1 + cfg["hold_frames"], False))     # then it lets go
+    assert shown() == _PROX_RGB["clear"]

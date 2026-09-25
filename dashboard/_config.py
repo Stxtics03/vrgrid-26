@@ -209,13 +209,19 @@ NEAR_BUDGET_FRACTION = 0.8
 LABEL_SOURCE = "GT"
 
 
-def header_markdown(frame_index: int, *, ghost_removal: bool) -> str:
+def header_markdown(frame_index: int, *, ghost_removal: bool, schedule=None) -> str:
     """The Demo tab's header: identity, frame, and the run's modes as badges.
-    Inline code spans are the nearest thing to pills Rerun's Markdown draws."""
+    Inline code spans are the nearest thing to pills Rerun's Markdown draws.
+    `schedule` adds a `RINGS` badge -- the one parameter every number on the
+    screen depends on, and the ring sizes the legend's swatch leaves out."""
+    badges = [f"`GHOST REMOVAL: {'ON' if ghost_removal else 'OFF'}`", f"`LABELS: {LABEL_SOURCE}`"]
+    if schedule is not None:
+        sizes = "/".join(f"{r.cell_m * 100:g}" for r in schedule.rings)
+        badges.insert(0, f"`RINGS: {sizes} cm`")
     return "\n".join([
         f"**VRgrid** · SIH26053 · Chronicles.exe · frame {frame_index:,}",
         "",
-        f"`GHOST REMOVAL: {'ON' if ghost_removal else 'OFF'}` `LABELS: {LABEL_SOURCE}`",
+        " ".join(badges),
     ])
 
 
@@ -229,37 +235,48 @@ def _bar(fraction: float, width: int = 20) -> str:
 
 
 def kpi_memory_markdown(n_occupied: int, schedule, *, has_map: bool = True) -> str:
-    """KPI tile: storage the occupied cells use, of the fixed allocation."""
+    """KPI tile: the fixed allocation, how much smaller it is than a uniform
+    grid at the finest cell, and how much of it the occupied cells use.
+
+    The allocation is the big figure because it is the headline claim -- it is
+    set at startup and never grows. The occupied-cell storage is a subset of it
+    (free and unknown cells hold data too), so it is the bar, not the headline.
+    This tile replaced the memory-over-time graph, whose three lines were flat."""
     if not has_map:
         return "## —\n\nMap memory · back end off"
     alloc = schedule.total_cells * CELL_BYTES
+    uniform = uniform_2_5d_baseline(schedule)["bytes"]
     used = int(n_occupied) * CELL_BYTES
+    base = f"{schedule.base_cell_m * 100:g} cm"
     # The big figure alone on its line: "1.67 / 8.94 MB" at heading size did not
     # fit a quarter-width tile, and a smaller font defeats the tile. The tile's
     # own title already says "Map memory", so no label line repeats it.
-    # Bar and allocation share one line: on a third line the allocation fell
-    # below the tile's height.
     return "\n".join([
-        f"## {used / 1e6:.2f} MB",
+        f"## {alloc / 1e6:.2f} MB fixed",
         "",
-        f"`{_bar(used / alloc, width=16)}` of {alloc / 1e6:.2f} MB fixed",
+        f"**{uniform / alloc:.1f}× smaller** than uniform {base} ({uniform / 1e6:,.0f} MB)",
+        "",
+        f"`{_bar(used / alloc, width=16)}` {used / 1e6:.2f} MB in use",
     ])
 
 
-def kpi_frame_time_markdown(total_ms: float | None, budget_ms: float) -> str:
-    """KPI tile: this frame's time and a verdict against the budget. Markdown
-    cannot be coloured in Rerun, so the verdict is a symbol and words; the
-    frame-time graph carries the green / red."""
-    if total_ms is None:
-        return "## —\n\nFrame time"
-    if total_ms <= NEAR_BUDGET_FRACTION * budget_ms:
+def kpi_frame_time_markdown(pipeline_ms: float | None, budget_ms: float) -> str:
+    """KPI tile: this frame's PIPELINE time -- perception + map, what the
+    budget is for -- and a verdict against the budget. The dashboard's own
+    drawing is not in it: every map redraw adds the viewer's point upload and
+    the near-field pothole pass (~110 ms), which is the demo's cost, not the
+    map's; the Details tab's run table reports it on its own row. Markdown
+    cannot be coloured in Rerun, so the verdict is a symbol and words."""
+    if pipeline_ms is None:
+        return "## —\n\nperception + map"
+    if pipeline_ms <= NEAR_BUDGET_FRACTION * budget_ms:
         verdict = "✓ under budget"
-    elif total_ms <= budget_ms:
+    elif pipeline_ms <= budget_ms:
         verdict = "△ near budget"
     else:
         verdict = "✗ over budget"
-    return "\n".join([f"## {total_ms:.0f} ms", "", f"**{verdict}** · {budget_ms:.0f} ms", "",
-                      "Frame time"])
+    return "\n".join([f"## {pipeline_ms:.0f} ms", "", f"**{verdict}** · {budget_ms:.0f} ms", "",
+                      "perception + map"])
 
 
 def load_proximity() -> dict:
@@ -289,6 +306,7 @@ def load_proximity() -> dict:
         "min_points": int(raw["dynamic"]["min_points"]),
         "surface_ids": resolve(raw["anomaly"]["surface_classes"]),
         "min_cells": int(raw["anomaly"]["min_cells"]),
+        "hold_frames": max(1, int(raw.get("hold_frames", 1))),
     }
 
 
@@ -311,34 +329,57 @@ def proximity_verdict(n_dynamic: int, nearest_dynamic_m, n_anomaly: int,
     return PROXIMITY_CLEAR, "CLEAR"
 
 
-# The hazard timeline's y value per state: one row each, worst on top.
+# Each verdict's rank, worst highest: the near-field hold keeps the worst.
 PROXIMITY_LEVEL = {PROXIMITY_CLEAR: 0, PROXIMITY_ANOMALY: 1, PROXIMITY_DYNAMIC: 2}
-_PROXIMITY_MARK = {PROXIMITY_CLEAR: "✓", PROXIMITY_ANOMALY: "△", PROXIMITY_DYNAMIC: "✗"}
 
 
-def proximity_readout_markdown(state: str, label: str, what: str, zones, cfg: dict) -> str:
-    """The near-field readout beside the top view: the verdict big, what the
-    nearest hazard is, and a count per square. `zones` is `[(half_width_m,
-    object_points, anomaly_cells), ...]`, innermost first. Markdown cannot be
-    coloured in Rerun, so the state is a symbol -- the same three the
-    frame-time tile uses -- and the top view carries the colour.
+# The two text panels beside the near-field view get ~170 pt of width on the
+# demo laptop (1536 x 912 pt at 125 %): the view left of them must stay
+# square. A Markdown table there was ~245 pt wide and clipped, so each panel
+# is a code block -- monospace, so the bars line up -- of at most
+# PANEL_MAX_CHARS characters a line: 19 x ~7.5 pt plus the block's padding is
+# ~155 pt, inside the ~160 pt left after the panel's own margins.
+_PANEL_BAR = 5
+PANEL_MAX_CHARS = 19
 
-    The units are what is actually counted, points and cells, never
-    "objects": one person is dozens of points and one pothole many cells."""
-    rows = [f"| {hw:g} m | {pts:,} | {cells:,} |" for hw, pts, cells in zones]
-    blind = blind_cone_radius_m()
-    return "\n".join([
-        f"## {_PROXIMITY_MARK[state]} {label}",
-        "",
-        what,
-        "",
-        "| square | object points | pothole cells |",
-        "|---|--:|--:|",
-        *rows,
-        "",
-        (f"red at {cfg['min_points']}+ points · yellow at {cfg['min_cells']}+ cells · "
-         f"blind spot {blind:.1f} m unknown"),
-    ])
+
+def _bar_rows(rows) -> str:
+    """`[(label, n), ...]` -> a code block of `label bar share%` lines."""
+    total = sum(n for _, n in rows)
+    width = max(len(label) for label, _ in rows)
+    lines = []
+    for label, n in rows:
+        share = n / total if total else 0.0
+        bar = _bar(share, width=_PANEL_BAR) if n else "░" * _PANEL_BAR
+        lines.append(f"{label:<{width}} {bar} {share * 100:3.0f}%")
+    return "\n".join(["```", *lines, "```"])
+
+
+def near_occupancy_markdown(occupied: int, free: int, unknown: int, ring, *,
+                            has_map: bool = True) -> str:
+    """The Demo tab's near-field occupancy: ring 0's cells -- the view's title
+    gives its reach -- split into the three states, as bars.
+
+    UNKNOWN counts every cell with too few observations, including ones never
+    observed, because that is what the map calls it (math §10.1, decided by
+    observation count). It is its own row and is never counted as free."""
+    if not has_map:
+        return "back end off"
+    rows = _bar_rows([("occupied", occupied), ("free", free), ("unknown", unknown)])
+    return f"{rows}\n\nunknown ≠ free"
+
+
+def ring_cells_markdown(counts, schedule, *, has_map: bool = True) -> str:
+    """The Demo tab's foveation readout: occupied cells in each ring by cell
+    size, as a share of the map. `counts` is one int per ring, innermost
+    first -- the same occupied cells the memory tile's in-use bar counts, so
+    the total line here is that tile's count. Reach per ring is on the Details
+    tab's legend; the header badge gives the sizes."""
+    if not has_map:
+        return "back end off"
+    total = int(sum(counts))
+    rows = _bar_rows([(f"{r.cell_m * 100:g} cm", int(n)) for r, n in zip(schedule.rings, counts)])
+    return "\n".join([rows, "", f"{total:,} occupied"])
 
 
 # Results the SIH26053 deck quotes (slides 4-5), shown on the demo's side panel.
@@ -391,8 +432,19 @@ def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_remova
     ]
     t = timing_ms or {}
     n = (run or {}).get("n", 0)
-    avg_total = run["total"] / n if run and n else None
-    rows.append(f"| Frame time | {_rate(t.get('total'))} | {_rate(avg_total)} |")
+
+    def avg(*keys):
+        return sum(run[k] for k in keys) / n if run and n else None
+
+    def this(*keys):
+        return sum(t[k] for k in keys) if all(k in t for k in keys) else None
+
+    # The pipeline -- what the budget is for -- apart from the dashboard's own
+    # drawing, and the whole loop the viewer experiences under both.
+    rows.append(f"| Pipeline (perception + map) | {_rate(this('perception', 'engine'))} | "
+                f"{_rate(avg('perception', 'engine'))} |")
+    rows.append(f"| Dashboard drawing | {_ms(this('dashboard'))} | {_ms(avg('dashboard'))} |")
+    rows.append(f"| Frame time | {_rate(t.get('total'))} | {_rate(avg('total'))} |")
     if gpu is not None:
         peak = (run or {}).get("gpu_peak_pct")
         rows.append(
@@ -413,7 +465,9 @@ def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_remova
     if ghost_removal:
         capped = run is not None and run["truncated"] > 0
         rows += [
-            f"| Moving-object cells cleared | {now('cleared')} | {total('cleared')} |",
+            # "Seen through", not "moving-object": the counter is every cell the
+            # cleanup clears, most of them stale for reasons other than motion.
+            f"| Cells cleared (seen through) | {now('cleared')} | {total('cleared')} |",
             # Not "static cells": the guard keeps ANY cell with a return in this
             # scan, including where a moving car is right now (math §10.4).
             f"| Cells kept (seen this scan) | {now('protected')} | {total('protected')} |",
@@ -421,7 +475,7 @@ def status_markdown(frame_index: int, n_occupied: int, schedule, *, ghost_remova
              f"{total('truncated')} |"),
         ]
     else:
-        rows.append("| Moving-object cells cleared | off | off |")
+        rows.append("| Cells cleared (seen through) | off | off |")
     peak = max(int((run or {}).get("peak_occupied", 0)), int(n_occupied))
     # Two rows, not one "Map memory" figure: the storage the occupied cells
     # take is NOT the process footprint -- the whole grid is allocated once at
@@ -469,6 +523,12 @@ def details_markdown(schedule) -> str:
         f"| Blind spot radius | {blind_cone_radius_m():.2f} m — no ground seen closer |",
         f"| 30 cm pothole | detectable up to {POTHOLE_30CM_RANGE_M:g} m |",
         f"| Pedestrian motion | detectable up to {PEDESTRIAN_MOTION_RANGE_M:g} m |",
+        "",
+        # Said outright, so the missing panel is not read as a missing feature:
+        # `gate.apply` runs in `eval/harness.run_sequence`, and the live
+        # `run/engine.MapEngine` this recording comes from does not call it.
+        ("_Semantic refinement (the gate, split / merge, the refinement pool) is "
+         "evaluated offline in the harness and is not shown in this live view._"),
     ]
     return "\n".join(rows)
 
@@ -491,8 +551,9 @@ def map_legend_markdown(schedule, *, color_by: str, blind_cone_m: float,
         "- **occupied cells**: coloured by height, blue low → orange high",
         "- **free space**: seen and clear (translucent slate)",
         "- **unknown**: never assumed free (violet)",
-        (f"- **blind spot {blind_cone_m:.2f} m** (red circle): the sensor cannot see the ground "
-         "inside it right now (the map there is remembered from earlier frames)"),
+        (f"- **blind spot {blind_cone_m:.2f} m** (violet circle): the sensor cannot see the "
+         "ground inside it right now. Cells there keep what earlier frames saw; a cell never "
+         "seen stays unknown, never free"),
         "- **moving objects** (pink dots) · **the car** (white arrow) · **path driven** (amber line)",
         f"- {points}, in the follow view only",
     ]
